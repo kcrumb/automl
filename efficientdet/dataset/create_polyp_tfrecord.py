@@ -44,7 +44,7 @@ flags.DEFINE_integer('num_shards', 100, 'Number of shards for output file.')
 FLAGS = flags.FLAGS
 
 polyp_label_map_dict = {
-    'polyp': 0
+    'background': 0, 'polyp': 1
 }
 
 GLOBAL_IMG_ID = 0  # global image id.
