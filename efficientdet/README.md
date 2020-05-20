@@ -5,7 +5,7 @@ Arxiv link: https://arxiv.org/abs/1911.09070
 
 Updates:
 
-  - **Apr22: Speed up end-to-end latency: D0 has up to 182 FPS throughput on Tesla V100.**
+  - **Apr22: Speed up end-to-end latency: D0 has up to >200 FPS throughput on Tesla V100.**
     * A great collaboration with [@fsx950223](https://github.com/fsx950223).
   - Apr1: Updated results for test-dev and added EfficientDet-D7.
   - Mar26: Fixed a few bugs and updated all checkpoints/results.
@@ -13,6 +13,8 @@ Updates:
   - Mar 13: Released the initial code and models.
 
 **Quick start tutorial: [tutorial.ipynb](tutorial.ipynb)**
+
+**Quick install dependencies: ```pip install -r requirements.txt```**
 
 ## 1. About EfficientDet Models
 
@@ -81,7 +83,7 @@ Then you will get:
  - frozen graph with name savedmodeldir/efficientdet-d0_frozen.pb
  - tflite file with name efficientdet-d0.tflite
 
-Notably, --tflite_path is optional, and it only works with tensorflow >= 2.2.0-rc4.
+Notably, --tflite_path does not work for now. It requires some extra fixes in future TensorFlow rerlease (> 2.2.0-rc4).
 
 
 ## 4. Benchmark model latency.
@@ -144,7 +146,7 @@ latency and throughput are:
 
     # Step 2: do inference with saved model.
     !python model_inspect.py --runmode=saved_model_infer \
-      --model_name=efficientdet-d0   --ckpt_path=efficientdet-d0 \
+      --model_name=efficientdet-d0  \
       --hparams="image_size=1920x1280"  \
       --saved_model_dir=/tmp/saved_model  \
       --input_image=img.png --output_image_dir=/tmp/
@@ -156,7 +158,7 @@ Alternatively, if you want to do inference using frozen graph instead of saved m
     # Step 0 and 1 is the same as before.
     # Step 2: do inference with frozen graph.
     !python model_inspect.py --runmode=saved_model_infer \
-      --model_name=efficientdet-d0   --ckpt_path=efficientdet-d0 \
+      --model_name=efficientdet-d0  \
       --hparams="image_size=1920x1280"  \
       --saved_model_dir=/tmp/saved_model/efficientdet-d0_frozen.pb  \
       --input_image=img.png --output_image_dir=/tmp/
@@ -189,12 +191,12 @@ You can run inference for a video and show the results online:
 
     # step 2: inference video using saved_model_video.
     !python model_inspect.py --runmode=saved_model_video \
-      --model_name=efficientdet-d0   --ckpt_path=efficientdet-d0 \
+      --model_name=efficientdet-d0 \
       --saved_model_dir=/tmp/savedmodel --input_video=input.mov
 
     # alternative step 2: inference video and save the result.
     !python model_inspect.py --runmode=saved_model_video \
-      --model_name=efficientdet-d0   --ckpt_path=efficientdet-d0 \
+      --model_name=efficientdet-d0   \
       --saved_model_dir=/tmp/savedmodel --input_video=input.mov  \
       --output_video=output.mov
 
@@ -261,7 +263,6 @@ You can also run eval on test-dev set with the following command:
     !python main.py --mode=train_and_eval \
         --training_file_pattern=tfrecord/pascal*.tfrecord \
         --validation_file_pattern=tfrecord/pascal*.tfrecord \
-        --val_json_file=tfrecord/json_pascal.json \
         --model_name=efficientdet-d0 \
         --model_dir=/tmp/efficientdet-d0-scratch  \
         --backbone_ckpt=efficientnet-b0  \
@@ -287,7 +288,6 @@ Finetune needs to use --ckpt rather than --backbone_ckpt.
     !python main.py --mode=train_and_eval \
         --training_file_pattern=tfrecord/pascal*.tfrecord \
         --validation_file_pattern=tfrecord/pascal*.tfrecord \
-        --val_json_file=tfrecord/json_pascal.json \
         --model_name=efficientdet-d0 \
         --model_dir=/tmp/efficientdet-d0-finetune  \
         --ckpt=efficientdet-d0  \
@@ -304,10 +304,47 @@ If you want to do inference for custom data, you can run
       --model_name=efficientdet-d0   --ckpt_path=efficientdet-d0 \
       --hparams=voc_config.yaml  \
       --input_image=img.png --output_image_dir=/tmp/
-  
+
 You should check more details of runmode which is written in caption-4.
 
-## 10. Training EfficientDets on TPUs.
+## 10. Train on multi GPUs.
+Install [horovod](https://github.com/horovod/horovod#id6).
+
+Create a config file for the PASCAL VOC dataset called voc_config.yaml and put this in it.
+
+      num_classes: 20
+      moving_average_decay: 0
+
+Download efficientdet coco checkpoint.
+
+    !wget https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/efficientdet-d0.tar.gz
+    !tar xf efficientdet-d0.tar.gz
+
+Finetune needs to use --ckpt rather than --backbone_ckpt.
+
+    !horovodrun -np <num_gpus> -H localhost:<num_gpus> python main.py --mode=train_and_eval \
+        --training_file_pattern=tfrecord/pascal*.tfrecord \
+        --validation_file_pattern=tfrecord/pascal*.tfrecord \
+        --model_name=efficientdet-d0 \
+        --model_dir=/tmp/efficientdet-d0-finetune  \
+        --ckpt=efficientdet-d0  \
+        --train_batch_size=8 \
+        --eval_batch_size=8 --eval_samples=1024 \
+        --num_examples_per_epoch=5717 --num_epochs=1  \
+        --hparams=voc_config.yaml \
+        --use_tpu=False
+
+If you want to do inference for custom data, you can run
+
+    # Setting hparams-flag is needed sometimes.
+    !python model_inspect.py --runmode=infer \
+      --model_name=efficientdet-d0   --ckpt_path=efficientdet-d0 \
+      --hparams=voc_config.yaml  \
+      --input_image=img.png --output_image_dir=/tmp/
+
+You should check more details of runmode which is written in caption-4.
+
+## 11. Training EfficientDets on TPUs.
 
 To train this model on Cloud TPU, you will need:
 

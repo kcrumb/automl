@@ -194,10 +194,7 @@ class TpuBatchNormalization(tf.keras.layers.BatchNormalization):
         inputs, reduction_axes, keep_dims=keep_dims)
 
     num_shards = tpu_function.get_tpu_context().number_of_shards or 1
-    if num_shards <= 8:  # Skip cross_replica for 2x2 or smaller slices.
-      num_shards_per_group = 1
-    else:
-      num_shards_per_group = max(8, num_shards // 8)
+    num_shards_per_group = min(32, num_shards)  # aggregate up to 32 cores.
     logging.info('TpuBatchNormalization with num_shards_per_group {}'.format(
         num_shards_per_group))
     if num_shards_per_group > 1:
@@ -243,10 +240,10 @@ def batch_norm_class(is_training, use_tpu=False):
     return BatchNormalization
 
 
-def tpu_batch_normalization(inputs, training=False, use_tpu=False, **kwargs):
+def batch_normalization(inputs, training=False, use_tpu=False, **kwargs):
   """A wrapper for TpuBatchNormalization."""
-  layer = batch_norm_class(training, use_tpu)(**kwargs)
-  return layer.apply(inputs, training=training)
+  bn_layer = batch_norm_class(training, use_tpu)(**kwargs)
+  return bn_layer(inputs, training=training)
 
 
 def batch_norm_act(inputs,
@@ -286,7 +283,7 @@ def batch_norm_act(inputs,
   else:
     axis = 3
 
-  inputs = tpu_batch_normalization(
+  inputs = batch_normalization(
       inputs=inputs,
       axis=axis,
       momentum=momentum,
@@ -504,17 +501,17 @@ def float16_scope():
     yield varscope
 
 
-def set_precision_policy(policy_name: Text = 'float32'):
+def set_precision_policy(policy_name: Text = None):
   """Set precision policy according to the name.
 
   Args:
     policy_name: precision policy name, one of 'float32', 'mixed_float16',
       'mixed_bfloat16', or None.
   """
-  if not policy_name or policy_name == 'float32':
+  if not policy_name:
     return
 
-  assert policy_name in ('mixed_float16', 'mixed_bfloat16')
+  assert policy_name in ('mixed_float16', 'mixed_bfloat16', 'float32')
   logging.info('use mixed precision policy name %s', policy_name)
   # TODO(tanmingxing): use tf.keras.layers.enable_v2_dtype_behavior() when it
   # available in stable TF release.

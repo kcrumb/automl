@@ -20,11 +20,11 @@ from __future__ import print_function
 
 import os
 
+from absl import app
 from absl import flags
 from absl import logging
 
 import numpy as np
-import tensorflow.compat.v1 as tf
 
 import dataloader
 import det_model_fn
@@ -108,6 +108,7 @@ flags.DEFINE_bool('eval_after_training', False, 'Run one eval after the '
 flags.DEFINE_integer(
     'tf_random_seed', None, 'Sets the TF graph seed for deterministic execution'
     ' across runs (for debugging).')
+flags.DEFINE_bool('use_horovod', None, 'Use horovod for multi-gpu training')
 
 # For Eval mode
 flags.DEFINE_integer('min_eval_interval', 180,
@@ -119,10 +120,15 @@ flags.DEFINE_integer(
 FLAGS = flags.FLAGS
 
 
-def main(argv):
-  assert len(argv) >= 1
-  if len(argv) > 1:  # Do not accept unknown args.
-    raise ValueError('Received unknown arguments: {}'.format(argv[1:]))
+def main(_):
+
+  if FLAGS.use_horovod:
+    import horovod.tensorflow as hvd  # pylint: disable=g-import-not-at-top
+    logging.info('Use horovod with multi gpus')
+    hvd.init()
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(hvd.local_rank())
+  import tensorflow.compat.v1 as tf  # pylint: disable=g-import-not-at-top
+  tf.disable_eager_execution()
 
   if FLAGS.use_tpu:
     tpu_cluster_resolver = tf.distribute.cluster_resolver.TPUClusterResolver(
@@ -222,6 +228,7 @@ def main(argv):
       val_json_file=FLAGS.val_json_file,
       testdev_dir=FLAGS.testdev_dir,
       mode=FLAGS.mode,
+      use_horovod=FLAGS.use_horovod
   )
   config_proto = tf.ConfigProto(
       allow_soft_placement=True, log_device_placement=False)
@@ -237,10 +244,15 @@ def main(argv):
       per_host_input_for_training=tf.estimator.tpu.InputPipelineConfig
       .PER_HOST_V2)
 
+  if FLAGS.use_horovod:
+    model_dir = FLAGS.model_dir if hvd.rank() == 0 else None
+  else:
+    model_dir = FLAGS.model_dir
+
   run_config = tf.estimator.tpu.RunConfig(
       cluster=tpu_cluster_resolver,
       evaluation_master=FLAGS.eval_master,
-      model_dir=FLAGS.model_dir,
+      model_dir=model_dir,
       log_step_count_steps=FLAGS.iterations_per_loop,
       session_config=config_proto,
       tpu_config=tpu_config,
@@ -290,7 +302,6 @@ def main(argv):
       utils.archive_ckpt(eval_results, eval_results['AP'], ckpt)
 
   elif FLAGS.mode == 'eval':
-    # Eval only runs on CPU or GPU host with batch_size = 1.
     # Override the default options: disable randomization in the input pipeline
     # and don't run on the TPU.
     eval_params = dict(
@@ -396,5 +407,5 @@ def main(argv):
 
 
 if __name__ == '__main__':
-  tf.disable_eager_execution()
-  tf.app.run(main)
+  logging.set_verbosity(logging.WARNING)
+  app.run(main)

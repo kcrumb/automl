@@ -375,7 +375,8 @@ def add_metric_fn_inputs(params,
   else:
     # Keep all anchors, but for each anchor, just keep the max probablity for
     # each class.
-    cls_outputs_idx = tf.math.argmax(cls_outputs_all, axis=-1)
+    cls_outputs_idx = tf.math.argmax(
+        cls_outputs_all, axis=-1, output_type=tf.int32)
     num_anchors = cls_outputs_all.shape[1]
 
     classes = cls_outputs_idx
@@ -452,6 +453,7 @@ def _model_fn(features, labels, mode, params, model, variable_filter_fn=None):
     RuntimeError: if both ckpt and backbone_ckpt are set.
   """
   # Convert params (dict) to Config for easier access.
+  training_hooks = None
   if params['data_format'] == 'channels_first':
     features = tf.transpose(features, [0, 3, 1, 2])
   def _model_outputs(inputs):
@@ -500,7 +502,9 @@ def _model_fn(features, labels, mode, params, model, variable_filter_fn=None):
     ema = tf.train.ExponentialMovingAverage(
         decay=moving_average_decay, num_updates=global_step)
     ema_vars = utils.get_ema_vars()
-
+  if params.get('use_horovod', None):
+    import horovod.tensorflow as hvd   # pylint: disable=g-import-not-at-top
+    learning_rate = learning_rate * hvd.size()
   if mode == tf.estimator.ModeKeys.TRAIN:
     if params['optimizer'].lower() == 'sgd':
       optimizer = tf.train.MomentumOptimizer(
@@ -512,6 +516,9 @@ def _model_fn(features, labels, mode, params, model, variable_filter_fn=None):
       raise ValueError('optimizers should be adam or sgd')
     if params['use_tpu']:
       optimizer = tf.tpu.CrossShardOptimizer(optimizer)
+    elif params.get('use_horovod', None):
+      optimizer = hvd.DistributedOptimizer(optimizer)
+      training_hooks = [hvd.BroadcastGlobalVariablesHook(0)]
 
     # Batch norm requires update_ops to be added as a train_op dependency.
     update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
@@ -648,7 +655,8 @@ def _model_fn(features, labels, mode, params, model, variable_filter_fn=None):
       train_op=train_op,
       eval_metrics=eval_metrics,
       host_call=utils.get_tpu_host_call(global_step, params),
-      scaffold_fn=scaffold_fn)
+      scaffold_fn=scaffold_fn,
+      training_hooks=training_hooks)
 
 
 def retinanet_model_fn(features, labels, mode, params):
