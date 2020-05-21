@@ -147,7 +147,6 @@ latency and throughput are:
     # Step 2: do inference with saved model.
     !python model_inspect.py --runmode=saved_model_infer \
       --model_name=efficientdet-d0  \
-      --hparams="image_size=1920x1280"  \
       --saved_model_dir=/tmp/saved_model  \
       --input_image=img.png --output_image_dir=/tmp/
     # you can visualize the output /tmp/0.jpg
@@ -159,7 +158,6 @@ Alternatively, if you want to do inference using frozen graph instead of saved m
     # Step 2: do inference with frozen graph.
     !python model_inspect.py --runmode=saved_model_infer \
       --model_name=efficientdet-d0  \
-      --hparams="image_size=1920x1280"  \
       --saved_model_dir=/tmp/saved_model/efficientdet-d0_frozen.pb  \
       --input_image=img.png --output_image_dir=/tmp/
 
@@ -322,7 +320,7 @@ Download efficientdet coco checkpoint.
 
 Finetune needs to use --ckpt rather than --backbone_ckpt.
 
-    !horovodrun -np <num_gpus> -H localhost:<num_gpus> python main.py --mode=train_and_eval \
+    !horovodrun -np <num_gpus> -H localhost:<num_gpus> python main.py --mode=train \
         --training_file_pattern=tfrecord/pascal*.tfrecord \
         --validation_file_pattern=tfrecord/pascal*.tfrecord \
         --model_name=efficientdet-d0 \
@@ -332,6 +330,7 @@ Finetune needs to use --ckpt rather than --backbone_ckpt.
         --eval_batch_size=8 --eval_samples=1024 \
         --num_examples_per_epoch=5717 --num_epochs=1  \
         --hparams=voc_config.yaml \
+        --use_horovod=True \
         --use_tpu=False
 
 If you want to do inference for custom data, you can run
