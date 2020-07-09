@@ -18,7 +18,7 @@ Updates:
 
 ## 1. About EfficientDet Models
 
-EfficientDets are a family of object detection models, which achieve state-of-the-art 52.6mAP on COCO test-dev, yet being 4x - 9x smaller and using 13x - 42x fewer FLOPs than previous detectors. Our models also run 2x - 4x faster on GPU, and 5x - 11x faster on CPU than other detectors.
+EfficientDets are a family of object detection models, which achieve state-of-the-art 53.7mAP on COCO test-dev, yet being 4x - 9x smaller and using 13x - 42x fewer FLOPs than previous detectors. Our models also run 2x - 4x faster on GPU, and 5x - 11x faster on CPU than other detectors.
 
 
 EfficientDets are developed based on the advanced backbone, a new BiFPN, and a new scaling technique:
@@ -53,37 +53,37 @@ Our model family starts from EfficientDet-D0, which has comparable accuracy as [
 
 We have provided a list of EfficientDet checkpoints and results as follows:
 
-|       Model    |  AP<sup>val</sup> | AP<sup>test</sup>    |  AP<sub>50</sub> | AP<sub>75</sub> |AP<sub>S</sub>   |  AP<sub>M</sub>    |  AP<sub>L</sub>   | | #params | #FLOPs |
+|       Model    | AP<sup>test</sup>    |  AP<sub>50</sub> | AP<sub>75</sub> |AP<sub>S</sub>   |  AP<sub>M</sub>    |  AP<sub>L</sub>   |  AP<sup>val</sup> | | #params | #FLOPs |
 |----------     |------ |------ |------ | -------- | ------| ------| ------ |------ |------ |  :------: |
-|     EfficientDet-D0 ([ckpt](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/efficientdet-d0.tar.gz), [val](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/val/d0_coco_val.txt), [test-dev](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/testdev/d0_coco_test-dev2017.txt))    | 33.5 | 33.8 | 52.2 | 35.8 | 12.0 | 38.3 | 51.2 |  | 3.9M | 2.54B  |
-|     EfficientDet-D1 ([ckpt](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/efficientdet-d1.tar.gz), [val](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/val/d1_coco_val.txt), [test-dev](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/testdev/d1_coco_test-dev2017.txt))    | 39.1  | 39.6 | 58.6 | 42.3 | 17.9 | 44.3 | 56.0 | | 6.6M | 6.10B |
-|     EfficientDet-D2 ([ckpt](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/efficientdet-d2.tar.gz), [val](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/val/d2_coco_val.txt), [test-dev](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/testdev/d2_coco_test-dev2017.txt))    | 42.5 | 43.0 | 62.3 | 46.2 | 22.5 | 47.0 | 58.4 | | 8.1M | 11.0B |
-|     EfficientDet-D3 ([ckpt](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/efficientdet-d3.tar.gz), [val](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/val/d3_coco_val.txt), [test-dev](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/testdev/d3_coco_test-dev2017.txt))    | 45.9 | 45.8 | 65.0 | 49.3 | 26.6 | 49.4 | 59.8 | | 12.0M | 24.9B |
-|     EfficientDet-D4 ([ckpt](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/efficientdet-d4.tar.gz), [val](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/val/d4_coco_val.txt), [test-dev](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/testdev/d4_coco_test-dev2017.txt))    | 49.0 | 49.4 | 69.0 | 53.4 | 30.3 | 53.2 | 63.2 |  | 20.7M | 55.2B |
-|     EfficientDet-D5 ([ckpt](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/efficientdet-d5.tar.gz), [val](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/val/d5_coco_val.txt), [test-dev](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/testdev/d5_coco_test-dev2017.txt))    | 50.5 | 50.7 | 70.2 | 54.7 | 33.2 | 53.9 | 63.2 |  | 33.7M | 135.4B |
-|     EfficientDet-D6 ([ckpt](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/efficientdet-d6.tar.gz), [val](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/val/d6_coco_val.txt), [test-dev](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/testdev/d6_coco_test-dev2017.txt))    | 51.3 | 51.7 | 71.2 | 56.0 | 34.1 | 55.2 | 64.1 | | 51.9M  |  225.6B  |
-|     EfficientDet-D7 ([ckpt](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/efficientdet-d7.tar.gz), [val](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/val/d7_coco_val.txt), [test-dev](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/testdev/d7_coco_test-dev2017.txt))    | 52.1 | 52.6 | 71.6 | 56.9 | 35.3 | 55.9 | 65.0 | | 51.9M  |  324.8B  |
+|     EfficientDet-D0 ([ckpt](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/efficientdet-d0.tar.gz), [val](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/val/d0_coco_val.txt), [test-dev](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/testdev/d0_coco_test-dev2017.txt))    | 33.8 | 52.2 | 35.8 | 12.0 | 38.3 | 51.2 | 33.5 |  | 3.9M | 2.54B  |
+|     EfficientDet-D1 ([ckpt](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/efficientdet-d1.tar.gz), [val](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/val/d1_coco_val.txt), [test-dev](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/testdev/d1_coco_test-dev2017.txt))    | 39.6 | 58.6 | 42.3 | 17.9 | 44.3 | 56.0 | 39.1 | | 6.6M | 6.10B |
+|     EfficientDet-D2 ([ckpt](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/efficientdet-d2.tar.gz), [val](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/val/d2_coco_val.txt), [test-dev](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/testdev/d2_coco_test-dev2017.txt))    | 43.0 | 62.3 | 46.2 | 22.5 | 47.0 | 58.4 | 42.5 | | 8.1M | 11.0B |
+|     EfficientDet-D3* ([ckpt](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/efficientdet-d3_softnms.tar.gz), [val](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/val/d3_coco_val_softnms.txt), [test-dev](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/testdev/d3_coco_test-dev2017_softnms.txt))    | 47.5 | 66.2 | 51.5 | 27.9 | 51.4 | 62.0 | 47.2 | | 12.0M | 24.9B |
+|     EfficientDet-D4 ([ckpt](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/efficientdet-d4.tar.gz), [val](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/val/d4_coco_val.txt), [test-dev](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/testdev/d4_coco_test-dev2017.txt))    | 49.4 | 69.0 | 53.4 | 30.3 | 53.2 | 63.2 | 49.0 |  | 20.7M | 55.2B |
+|     EfficientDet-D5 ([ckpt](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/efficientdet-d5.tar.gz), [val](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/val/d5_coco_val.txt), [test-dev](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/testdev/d5_coco_test-dev2017.txt))    | 50.7 | 70.2 | 54.7 | 33.2 | 53.9 | 63.2 | 50.5 |  | 33.7M | 135.4B |
+|     EfficientDet-D6 ([ckpt](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/efficientdet-d6.tar.gz), [val](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/val/d6_coco_val.txt), [test-dev](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/testdev/d6_coco_test-dev2017.txt))    | 51.7 | 71.2 | 56.0 | 34.1 | 55.2 | 64.1 | 51.3 | | 51.9M  |  225.6B  |
+|     EfficientDet-D7* ([ckpt](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/efficientdet-d7.tar.gz), [val](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/val/d7_coco_val_softnms.txt), [test-dev](https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/testdev/d7_coco_test-dev2017_softnms.txt))    | 53.7 | 72.4 | 58.4 | 35.8 | 57.0 | 66.3 | 53.4 | | 51.9M  |  324.8B  |
 
-** <em>val</em> denotes validation results, <em>test-dev</em> denotes test-dev2017 results. AP<sup>val</sup> is for validation accuracy, all other AP results in the table are for COCO test-dev2017. All accuracy numbers are for single-model single-scale without ensemble or test-time augmentation. All checkpoints are trained with baseline preprocessing (no autoaugmentation).
-** EfficientNet-D0 to D6 are trained with 300 epochs, EfficientNet-D7 is trained with 500 epochs.
+<sup><em>val</em> denotes validation results, <em>test-dev</em> denotes test-dev2017 results. AP<sup>val</sup> is for validation accuracy, all other AP results in the table are for COCO test-dev2017. All accuracy numbers are for single-model single-scale without ensemble or test-time augmentation.  EfficientDet-D0 to D6 are trained for 300 epochs and tested with hard NMS, D3* and D7* are trained for 600 epochs and tested with soft-NMS.</sup>
 
 
-## 3. Export SavedModel, frozen graph, or tflite.
+## 3. Export SavedModel, frozen graph, tensort models, or tflite.
 
 Run the following command line to export models:
 
     !rm  -rf savedmodeldir
     !python model_inspect.py --runmode=saved_model --model_name=efficientdet-d0 \
       --ckpt_path=efficientdet-d0 --saved_model_dir=savedmodeldir \
-      --tflite_path=efficientdet-d0.tflite
+      --tensorrt=FP32  --tflite_path=efficientdet-d0.tflite
 
 Then you will get:
 
- - saved model under savedmodeldir/
- - frozen graph with name savedmodeldir/efficientdet-d0_frozen.pb
- - tflite file with name efficientdet-d0.tflite
+ - saved model under `savedmodeldir/`
+ - frozen graph with name `savedmodeldir/efficientdet-d0_frozen.pb`
+ - TensorRT saved model under `savedmodeldir/tensorrt_fp32/`
+ - tflite file with name `efficientdet-d0.tflite`
 
-Notably, --tflite_path does not work for now. It requires some extra fixes in future TensorFlow rerlease (> 2.2.0-rc4).
+Notably, --tflite_path only works after 2.3.0-dev20200521
 
 
 ## 4. Benchmark model latency.
@@ -96,7 +96,7 @@ prediction output), use the following command:
 
     !python model_inspect.py --runmode=bm --model_name=efficientdet-d0
 
-** add --hparams="precision=mixed-float16" if running on V100.
+** add --hparams="mixed_precision=True" if running on V100.
 
 On single Tesla V100 without TensorRT, our D0 network (no pre/post-processing)
 has 134 FPS (frame per second) for batch size 1, and 238 FPS for batch size 8.
@@ -123,9 +123,11 @@ latency and throughput are:
 | EfficientDet-D0 |  33.8 | 10.2ms | 97 fps | 209 fps |
 | EfficientDet-D1 |  39.6 | 13.5ms | 74 fps | 140 fps |
 | EfficientDet-D2 |  43.0 | 17.7ms | 57 fps | 97 fps  |
-| EfficientDet-D3 |  45.8 | 29.0ms | 35 fps | 58 fps  |
+| EfficientDet-D3 |  47.5 | 28.0ms | 36 fps | 58 fps  |
 | EfficientDet-D4 |  49.4 | 42.8ms | 23 fps | 35 fps  |
 | EfficientDet-D5 |  50.7 | 72.5ms | 14 fps | 18 fps  |
+| EfficientDet-D6 |  51.7 | 92.8ms | 11 fps | - fps  |
+| EfficientDet-D7 |  53.7 | 122ms  | 8.2 fps | - fps  |
 
 ** FPS means frames per second (or images/second).
 
@@ -218,8 +220,7 @@ You can run inference for a video and show the results online:
     !python main.py --mode=eval  \
         --model_name=${MODEL}  --model_dir=${CKPT_PATH}  \
         --validation_file_pattern=tfrecord/val*  \
-        --val_json_file=annotations/instances_val2017.json  \
-        --use_tpu=False
+        --val_json_file=annotations/instances_val2017.json
 
 You can also run eval on test-dev set with the following command:
 
@@ -240,12 +241,13 @@ You can also run eval on test-dev set with the following command:
     !python main.py --mode=eval  \
         --model_name=${MODEL}  --model_dir=${CKPT_PATH}  \
         --validation_file_pattern=tfrecord/testdev*  \
-        --testdev_dir='testdev_output' --eval_samples=20288 \
-        --use_tpu=False
+        --testdev_dir='testdev_output' --eval_samples=20288
     # Now you can submit testdev_output/detections_test-dev2017_test_results.json to
     # coco server: https://competitions.codalab.org/competitions/20794#participate
 
-## 8. Train on PASCAL VOC 2012 with backbone ImageNet ckpt.
+## 8. Finetune on PASCAL VOC 2012 with detector COCO ckpt.
+
+Download data and checkpoints.
 
     # Download and convert pascal data.
     !wget http://host.robots.ox.ac.uk/pascal/VOC/voc2012/VOCtrainval_11-May-2012.tar
@@ -255,31 +257,14 @@ You can also run eval on test-dev set with the following command:
         --data_dir=VOCdevkit --year=VOC2012  --output_path=tfrecord/pascal
 
     # Download backbone checkopints.
-    !wget https://storage.googleapis.com/cloud-tpu-checkpoints/efficientnet/ckptsaug/efficientnet-b0.tar.gz
-    !tar xf efficientnet-b0.tar.gz 
-
-    !python main.py --mode=train_and_eval \
-        --training_file_pattern=tfrecord/pascal*.tfrecord \
-        --validation_file_pattern=tfrecord/pascal*.tfrecord \
-        --model_name=efficientdet-d0 \
-        --model_dir=/tmp/efficientdet-d0-scratch  \
-        --backbone_ckpt=efficientnet-b0  \
-        --train_batch_size=8 \
-        --eval_batch_size=8 --eval_samples=512 \
-        --num_examples_per_epoch=5717 --num_epochs=1  \
-        --hparams="num_classes=20,moving_average_decay=0" \
-        --use_tpu=False
-
-## 9. Finetune on PASCAL VOC 2012 with detector COCO ckpt.
-Create a config file for the PASCAL VOC dataset called voc_config.yaml and put this in it.
-
-      num_classes: 20
-      moving_average_decay: 0
-
-Download efficientdet coco checkpoint.
-
     !wget https://storage.googleapis.com/cloud-tpu-checkpoints/efficientdet/coco/efficientdet-d0.tar.gz
     !tar xf efficientdet-d0.tar.gz
+
+Create a config file for the PASCAL VOC dataset called voc_config.yaml and put this in it.
+
+      num_classes: 21
+      var_freeze_expr: '(efficientnet|fpn_cells|resample_p6)'
+      label_id_mapping: {0: background, 1: aeroplane, 2: bicycle, 3: bird, 4: boat, 5: bottle, 6: bus, 7: car, 8: cat, 9: chair, 10: cow, 11: diningtable, 12: dog, 13: horse, 14: motorbike, 15: person, 16: pottedplant, 17: sheep, 18: sofa, 19: train, 20: tvmonitor}
 
 Finetune needs to use --ckpt rather than --backbone_ckpt.
 
@@ -289,11 +274,10 @@ Finetune needs to use --ckpt rather than --backbone_ckpt.
         --model_name=efficientdet-d0 \
         --model_dir=/tmp/efficientdet-d0-finetune  \
         --ckpt=efficientdet-d0  \
-        --train_batch_size=8 \
-        --eval_batch_size=8 --eval_samples=1024 \
-        --num_examples_per_epoch=5717 --num_epochs=1  \
-        --hparams=voc_config.yaml \
-        --use_tpu=False
+        --train_batch_size=64 \
+        --eval_batch_size=64 --eval_samples=1024 \
+        --num_examples_per_epoch=5717 --num_epochs=50  \
+        --hparams=voc_config.yaml
 
 If you want to do inference for custom data, you can run
 
@@ -305,13 +289,15 @@ If you want to do inference for custom data, you can run
 
 You should check more details of runmode which is written in caption-4.
 
-## 10. Train on multi GPUs.
+## 9. Train on multi GPUs.
+
 Install [horovod](https://github.com/horovod/horovod#id6).
 
 Create a config file for the PASCAL VOC dataset called voc_config.yaml and put this in it.
 
-      num_classes: 20
-      moving_average_decay: 0
+      num_classes: 21
+      var_freeze_expr: '(efficientnet|fpn_cells|resample_p6)'
+      label_id_mapping: {0: background, 1: aeroplane, 2: bicycle, 3: bird, 4: boat, 5: bottle, 6: bus, 7: car, 8: cat, 9: chair, 10: cow, 11: diningtable, 12: dog, 13: horse, 14: motorbike, 15: person, 16: pottedplant, 17: sheep, 18: sofa, 19: train, 20: tvmonitor}
 
 Download efficientdet coco checkpoint.
 
@@ -326,12 +312,11 @@ Finetune needs to use --ckpt rather than --backbone_ckpt.
         --model_name=efficientdet-d0 \
         --model_dir=/tmp/efficientdet-d0-finetune  \
         --ckpt=efficientdet-d0  \
-        --train_batch_size=8 \
-        --eval_batch_size=8 --eval_samples=1024 \
-        --num_examples_per_epoch=5717 --num_epochs=1  \
-        --hparams=voc_config.yaml \
-        --use_horovod=True \
-        --use_tpu=False
+        --train_batch_size=64 \
+        --eval_batch_size=64 --eval_samples=1024 \
+        --num_examples_per_epoch=5717 --num_epochs=50  \
+        --hparams=voc_config.yaml
+        --strategy=horovod
 
 If you want to do inference for custom data, you can run
 
@@ -343,7 +328,7 @@ If you want to do inference for custom data, you can run
 
 You should check more details of runmode which is written in caption-4.
 
-## 11. Training EfficientDets on TPUs.
+## 10. Training EfficientDets on TPUs.
 
 To train this model on Cloud TPU, you will need:
 
@@ -354,7 +339,7 @@ To train this model on Cloud TPU, you will need:
 Then train the model:
 
     !export PYTHONPATH="$PYTHONPATH:/path/to/models"
-    !python main.py --tpu=TPU_NAME --training_file_pattern=DATA_DIR/*.tfrecord --model_dir=MODEL_DIR
+    !python main.py --tpu=TPU_NAME --training_file_pattern=DATA_DIR/*.tfrecord --model_dir=MODEL_DIR --strategy=tpu
 
     # TPU_NAME is the name of the TPU node, the same name that appears when you run gcloud compute tpus list, or ctpu ls.
     # MODEL_DIR is a GCS location (a URL starting with gs:// where both the GCE VM and the associated Cloud TPU have write access.

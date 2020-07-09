@@ -12,19 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Data loader and processing.
-
-This module is borrowed from TPU RetinaNet implementation:
-https://github.com/tensorflow/tpu/blob/master/models/official/retinanet/anchors.py
-"""
-
-import tensorflow.compat.v1 as tf
+"""Data loader and processing."""
+from absl import logging
+import tensorflow as tf
 
 import anchors
+import utils
 from object_detection import preprocessor
 from object_detection import tf_example_decoder
-
-MAX_NUM_INSTANCES = 100
 
 
 class InputProcessor(object):
@@ -67,12 +62,30 @@ class InputProcessor(object):
     scale = tf.expand_dims(scale, axis=0)
     self._image /= scale
 
-  def set_training_random_scale_factors(self, scale_min, scale_max):
-    """Set the parameters for multiscale training."""
+  def set_training_random_scale_factors(self,
+                                        scale_min,
+                                        scale_max,
+                                        target_size=None):
+    """Set the parameters for multiscale training.
+
+    Notably, if train and eval use different sizes, then target_size should be
+    set as eval size to avoid the discrency between train and eval.
+
+    Args:
+      scale_min: minimal scale factor.
+      scale_max: maximum scale factor.
+      target_size: targeted size, usually same as eval. If None, use train size.
+    """
+    if not target_size:
+      target_size = self._output_size
+    target_size = utils.parse_image_size(target_size)
+    logging.info('target_size = %s, output_size = %s', target_size,
+                 self._output_size)
+
     # Select a random scale factor.
-    random_scale_factor = tf.random_uniform([], scale_min, scale_max)
-    scaled_y = tf.cast(random_scale_factor * self._output_size[0], tf.int32)
-    scaled_x = tf.cast(random_scale_factor * self._output_size[1], tf.int32)
+    random_scale_factor = tf.random.uniform([], scale_min, scale_max)
+    scaled_y = tf.cast(random_scale_factor * target_size[0], tf.int32)
+    scaled_x = tf.cast(random_scale_factor * target_size[1], tf.int32)
 
     # Recompute the accurate scale_factor using rounded scaled image size.
     height = tf.cast(tf.shape(self._image)[0], tf.float32)
@@ -87,8 +100,8 @@ class InputProcessor(object):
     scaled_width = tf.cast(width * image_scale, tf.int32)
     offset_y = tf.cast(scaled_height - self._output_size[0], tf.float32)
     offset_x = tf.cast(scaled_width - self._output_size[1], tf.float32)
-    offset_y = tf.maximum(0.0, offset_y) * tf.random_uniform([], 0, 1)
-    offset_x = tf.maximum(0.0, offset_x) * tf.random_uniform([], 0, 1)
+    offset_y = tf.maximum(0.0, offset_y) * tf.random.uniform([], 0, 1)
+    offset_x = tf.maximum(0.0, offset_x) * tf.random.uniform([], 0, 1)
     offset_y = tf.cast(offset_y, tf.int32)
     offset_x = tf.cast(offset_x, tf.int32)
     self._image_scale = image_scale
@@ -113,13 +126,15 @@ class InputProcessor(object):
 
   def resize_and_crop_image(self, method=tf.image.ResizeMethod.BILINEAR):
     """Resize input image and crop it to the self._output dimension."""
-    scaled_image = tf.image.resize_images(
+    scaled_image = tf.image.resize(
         self._image, [self._scaled_height, self._scaled_width], method=method)
-    scaled_image = scaled_image[
-        self._crop_offset_y:self._crop_offset_y + self._output_size[0],
-        self._crop_offset_x:self._crop_offset_x + self._output_size[1], :]
-    output_image = tf.image.pad_to_bounding_box(
-        scaled_image, 0, 0, self._output_size[0], self._output_size[1])
+    scaled_image = scaled_image[self._crop_offset_y:self._crop_offset_y +
+                                self._output_size[0],
+                                self._crop_offset_x:self._crop_offset_x +
+                                self._output_size[1], :]
+    output_image = tf.image.pad_to_bounding_box(scaled_image, 0, 0,
+                                                self._output_size[0],
+                                                self._output_size[1])
     return output_image
 
 
@@ -138,24 +153,35 @@ class DetectionInputProcessor(InputProcessor):
 
   def clip_boxes(self, boxes):
     """Clip boxes to fit in an image."""
-    boxes = tf.where(tf.less(boxes, 0), tf.zeros_like(boxes), boxes)
-    boxes = tf.where(tf.greater(boxes, self._output_size[0] - 1),
-                     (self._output_size[1] - 1) * tf.ones_like(boxes), boxes)
+    ymin, xmin, ymax, xmax = tf.unstack(boxes, axis=1)
+    ymin = tf.clip_by_value(ymin, 0, self._output_size[0] - 1)
+    xmin = tf.clip_by_value(xmin, 0, self._output_size[1] - 1)
+    ymax = tf.clip_by_value(ymax, 0, self._output_size[0] - 1)
+    xmax = tf.clip_by_value(xmax, 0, self._output_size[1] - 1)
+    boxes = tf.stack([ymin, xmin, ymax, xmax], axis=1)
     return boxes
 
   def resize_and_crop_boxes(self):
     """Resize boxes and crop it to the self._output dimension."""
     boxlist = preprocessor.box_list.BoxList(self._boxes)
-    boxes = preprocessor.box_list_scale(
-        boxlist, self._scaled_height, self._scaled_width).get()
+    # boxlist is in range of [0, 1], so here we pass the scale_height/width
+    # instead of just scale.
+    boxes = preprocessor.box_list_scale(boxlist, self._scaled_height,
+                                        self._scaled_width).get()
     # Adjust box coordinates based on the offset.
-    box_offset = tf.stack([self._crop_offset_y, self._crop_offset_x,
-                           self._crop_offset_y, self._crop_offset_x,])
+    box_offset = tf.stack([
+        self._crop_offset_y,
+        self._crop_offset_x,
+        self._crop_offset_y,
+        self._crop_offset_x,
+    ])
     boxes -= tf.cast(tf.reshape(box_offset, [1, 4]), tf.float32)
     # Clip the boxes.
     boxes = self.clip_boxes(boxes)
-    # Filter out ground truth boxes that are all zeros.
-    indices = tf.where(tf.not_equal(tf.reduce_sum(boxes, axis=1), 0))
+    # Filter out ground truth boxes that are illegal.
+    indices = tf.where(
+        tf.not_equal((boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1]),
+                     0))
     boxes = tf.gather_nd(boxes, indices)
     classes = tf.gather_nd(self._classes, indices)
     return boxes, classes
@@ -188,16 +214,16 @@ def pad_to_fixed_size(data, pad_value, output_shape):
     output_shape: The output shape of a 2D tensor.
 
   Returns:
-    The Padded tensor with output_shape [max_num_instances, dimension].
+    The Padded tensor with output_shape [max_instances_per_image, dimension].
   """
-  max_num_instances = output_shape[0]
+  max_instances_per_image = output_shape[0]
   dimension = output_shape[1]
   data = tf.reshape(data, [-1, dimension])
   num_instances = tf.shape(data)[0]
-  assert_length = tf.Assert(
-      tf.less_equal(num_instances, max_num_instances), [num_instances])
-  with tf.control_dependencies([assert_length]):
-    pad_length = max_num_instances - num_instances
+  msg = 'ERROR: please increase config.max_instances_per_image'
+  with tf.control_dependencies(
+      [tf.assert_less(num_instances, max_instances_per_image, message=msg)]):
+    pad_length = max_instances_per_image - num_instances
   paddings = pad_value * tf.ones([pad_length, dimension])
   padded_data = tf.concat([data, paddings], axis=0)
   padded_data = tf.reshape(padded_data, output_shape)
@@ -207,11 +233,16 @@ def pad_to_fixed_size(data, pad_value, output_shape):
 class InputReader(object):
   """Input reader for dataset."""
 
-  def __init__(self, file_pattern, is_training, use_fake_data=False):
+  def __init__(self,
+               file_pattern,
+               is_training,
+               use_fake_data=False,
+               max_instances_per_image=None):
     self._file_pattern = file_pattern
     self._is_training = is_training
     self._use_fake_data = use_fake_data
-    self._max_num_instances = MAX_NUM_INSTANCES
+    # COCO has 100 limit, but users may set different values for custom dataset.
+    self._max_instances_per_image = max_instances_per_image or 100
 
   def __call__(self, params):
     input_anchors = anchors.Anchors(params['min_level'], params['max_level'],
@@ -220,8 +251,10 @@ class InputReader(object):
                                     params['anchor_scale'],
                                     params['image_size'])
     anchor_labeler = anchors.AnchorLabeler(input_anchors, params['num_classes'])
-    example_decoder = tf_example_decoder.TfExampleDecoder()
+    example_decoder = tf_example_decoder.TfExampleDecoder(
+        regenerate_source_id=params['regenerate_source_id'])
 
+    @tf.autograph.experimental.do_not_convert
     def _dataset_parser(value):
       """Parse data to a fixed dimension input image and learning targets.
 
@@ -246,14 +279,14 @@ class InputReader(object):
         image_scale: Scale of the processed image to the original image.
         boxes: Groundtruth bounding box annotations. The box is represented in
           [y1, x1, y2, x2] format. The tensor is padded with -1 to the fixed
-          dimension [self._max_num_instances, 4].
+          dimension [self._max_instances_per_image, 4].
         is_crowds: Groundtruth annotations to indicate if an annotation
           represents a group of instances by value {0, 1}. The tensor is
-          padded with 0 to the fixed dimension [self._max_num_instances].
+          padded with 0 to the fixed dimension [self._max_instances_per_image].
         areas: Groundtruth areas annotations. The tensor is padded with -1
-          to the fixed dimension [self._max_num_instances].
+          to the fixed dimension [self._max_instances_per_image].
         classes: Groundtruth classes annotations. The tensor is padded with -1
-          to the fixed dimension [self._max_num_instances].
+          to the fixed dimension [self._max_instances_per_image].
       """
       with tf.name_scope('parser'):
         data = example_decoder.decode(value)
@@ -280,14 +313,15 @@ class InputReader(object):
               image, boxes, params['autoaugment_policy'], params['use_augmix'],
               *params['augmix_params'])
 
-        input_processor = DetectionInputProcessor(
-            image, params['image_size'], boxes, classes)
+        input_processor = DetectionInputProcessor(image, params['image_size'],
+                                                  boxes, classes)
         input_processor.normalize_image()
         if self._is_training and params['input_rand_hflip']:
           input_processor.random_horizontal_flip()
         if self._is_training:
           input_processor.set_training_random_scale_factors(
-              params['train_scale_min'], params['train_scale_max'])
+              params['train_scale_min'], params['train_scale_max'],
+              params.get('target_size', None))
         else:
           input_processor.set_scale_factors_to_output_size()
         image = input_processor.resize_and_crop_image()
@@ -297,19 +331,20 @@ class InputReader(object):
         (cls_targets, box_targets,
          num_positives) = anchor_labeler.label_anchors(boxes, classes)
 
-        source_id = tf.where(tf.equal(source_id, tf.constant('')), '-1',
-                             source_id)
-        source_id = tf.string_to_number(source_id)
+        source_id = tf.where(
+            tf.equal(source_id, tf.constant('')), '-1', source_id)
+        source_id = tf.strings.to_number(source_id)
 
         # Pad groundtruth data for evaluation.
         image_scale = input_processor.image_scale_to_original
         boxes *= image_scale
         is_crowds = tf.cast(is_crowds, dtype=tf.float32)
-        boxes = pad_to_fixed_size(boxes, -1, [self._max_num_instances, 4])
+        boxes = pad_to_fixed_size(boxes, -1, [self._max_instances_per_image, 4])
         is_crowds = pad_to_fixed_size(is_crowds, 0,
-                                      [self._max_num_instances, 1])
-        areas = pad_to_fixed_size(areas, -1, [self._max_num_instances, 1])
-        classes = pad_to_fixed_size(classes, -1, [self._max_num_instances, 1])
+                                      [self._max_instances_per_image, 1])
+        areas = pad_to_fixed_size(areas, -1, [self._max_instances_per_image, 1])
+        classes = pad_to_fixed_size(classes, -1,
+                                    [self._max_instances_per_image, 1])
         return (image, cls_targets, box_targets, num_positives, source_id,
                 image_scale, boxes, is_crowds, areas, classes)
 
@@ -347,7 +382,15 @@ class InputReader(object):
               batch_size,
           ]), [batch_size, 1])
 
+      if params['data_format'] == 'channels_first':
+        images = tf.transpose(images, [0, 3, 1, 2])
+
       for level in range(params['min_level'], params['max_level'] + 1):
+        if params['data_format'] == 'channels_first':
+          labels['cls_targets_%d' % level] = tf.transpose(
+              labels['cls_targets_%d' % level], [0, 3, 1, 2])
+          labels['box_targets_%d' % level] = tf.transpose(
+              labels['box_targets_%d' % level], [0, 3, 1, 2])
         labels['cls_targets_%d' % level] = cls_targets[level]
         labels['box_targets_%d' % level] = box_targets[level]
       # Concatenate groundtruth annotations to a tensor.

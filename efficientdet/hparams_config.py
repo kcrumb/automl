@@ -20,11 +20,11 @@ from __future__ import division
 from __future__ import print_function
 
 import ast
+import collections
 import copy
+from typing import Any, Dict, Text
 import six
 import tensorflow.compat.v1 as tf
-
-from typing import Any, Dict, Text
 import yaml
 
 
@@ -74,10 +74,12 @@ class Config(object):
         else:
           raise KeyError('Key `{}` does not exist for overriding. '.format(k))
       else:
-        if isinstance(self.__dict__[k], dict):
+        if isinstance(self.__dict__[k], Config) and isinstance(v, dict):
           self.__dict__[k]._update(v, allow_new_keys)
+        elif isinstance(self.__dict__[k], Config) and isinstance(v, Config):
+          self.__dict__[k]._update(v.as_dict(), allow_new_keys)
         else:
-          self.__dict__[k] = copy.deepcopy(v)
+          self.__setattr__(k, v)
 
   def get(self, k, default_value=None):
     return self.__dict__.get(k, default_value)
@@ -89,7 +91,7 @@ class Config(object):
   def keys(self):
     return self.__dict__.keys()
 
-  def override(self, config_dict_or_str):
+  def override(self, config_dict_or_str, allow_new_keys=False):
     """Update members while disallowing new keys."""
     if isinstance(config_dict_or_str, str):
       if not config_dict_or_str:
@@ -107,19 +109,7 @@ class Config(object):
     else:
       raise ValueError('Unknown value type: {}'.format(config_dict_or_str))
 
-    self._update(config_dict, allow_new_keys=False)
-
-  def parse_from_module(self, module_name: Text) -> Dict[Any, Any]:
-    """Import config from module_name containing key=value pairs."""
-    config_dict = {}
-    module = __import__(module_name)
-
-    for attr in dir(module):
-      # skip built-ins and private attributes
-      if not attr.startswith('_'):
-        config_dict[attr] = getattr(module, attr)
-
-    return config_dict
+    self._update(config_dict, allow_new_keys)
 
   def parse_from_yaml(self, yaml_file_path: Text) -> Dict[Any, Any]:
     """Parses a yaml file and returns a dictionary."""
@@ -133,7 +123,7 @@ class Config(object):
       yaml.dump(self.as_dict(), f, default_flow_style=False)
 
   def parse_from_str(self, config_str: Text) -> Dict[Any, Any]:
-    """parse from a string in format 'x=a,y=2' and return the dict."""
+    """Parse a string like 'x.y=1,x.z=2' to nested dict {x: {y: 1, z: 2}}."""
     if not config_str:
       return {}
     config_dict = {}
@@ -141,8 +131,26 @@ class Config(object):
       for kv_pair in config_str.split(','):
         if not kv_pair:  # skip empty string
           continue
-        k, v = kv_pair.split('=')
-        config_dict[k.strip()] = eval_str_fn(v.strip())
+        key_str, value_str = kv_pair.split('=')
+        key_str = key_str.strip()
+
+        def add_kv_recursive(k, v):
+          """Recursively parse x.y.z=tt to {x: {y: {z: tt}}}."""
+          if '.' not in k:
+            return {k: eval_str_fn(v)}
+          pos = k.index('.')
+          return {k[:pos]: add_kv_recursive(k[pos+1:], v)}
+
+        def merge_dict_recursive(target, src):
+          """Recursively merge two nested dictionary."""
+          for k in src.keys():
+            if ((k in target and isinstance(target[k], dict) and
+                 isinstance(src[k], collections.Mapping))):
+              merge_dict_recursive(target[k], src[k])
+            else:
+              target[k] = src[k]
+
+        merge_dict_recursive(config_dict, add_kv_recursive(key_str, value_str))
       return config_dict
     except ValueError:
       raise ValueError('Invalid config_str: {}'.format(config_str))
@@ -156,8 +164,6 @@ class Config(object):
       else:
         config_dict[k] = copy.deepcopy(v)
     return config_dict
-
-
 # pylint: enable=protected-access
 
 
@@ -173,6 +179,7 @@ def default_detection_configs():
 
   # input preprocessing parameters
   h.image_size = 640  # An integer or a string WxH such as 640x320.
+  h.target_size = None
   h.input_rand_hflip = True
   h.train_scale_min = 0.1
   h.train_scale_max = 2.0
@@ -182,9 +189,13 @@ def default_detection_configs():
   h.augmix_params = (3, -1, 1)
 
   # dataset specific parameters
-  h.num_classes = 90
+  # TODO(tanmingxing): update this to be 91 for COCO, and 21 for pascal.
+  h.num_classes = 90  # 1+ actual classes, 0 is reserved for background.
+
   h.skip_crowd_during_training = True
   h.label_id_mapping = None
+  h.max_instances_per_image = 100  # Default to 100 for COCO.
+  h.regenerate_source_id = False
 
   # model architecture
   h.min_level = 3
@@ -209,19 +220,23 @@ def default_detection_configs():
   h.data_format = 'channels_last'
 
   # classification loss
+  h.label_smoothing = 0.0  # 0.1 is a good default
+  # Behold the focal loss parameters
   h.alpha = 0.25
   h.gamma = 1.5
+
   # localization loss
-  h.delta = 0.1
+  h.delta = 0.1  # regularization parameter of huber loss.
+  # total loss = box_loss * box_loss_weight + iou_loss * iou_loss_weight
   h.box_loss_weight = 50.0
   h.iou_loss_type = None
   h.iou_loss_weight = 1.0
+
   # regularization l2 loss.
   h.weight_decay = 4e-5
-  # enable bfloat
-  h.use_tpu = True
-  # precision: one of 'float32', 'mixed_float16', 'mixed_bfloat16'.
-  h.precision = None  # If None, use float32.
+  # use horovod for multi-gpu training. If None, use TF default.
+  h.strategy = None  # 'tpu', 'horovod', None
+  h.mixed_precision = False  # If False, use float32.
 
   # For detection.
   h.box_class_repeats = 3
@@ -231,8 +246,16 @@ def default_detection_configs():
   h.apply_bn_for_resampling = True
   h.conv_after_downsample = False
   h.conv_bn_act_pattern = False
-  h.use_native_resize_op = False
-  h.pooling_type = None
+
+  # For post-processing nms, must be a dict.
+  h.nms_configs = {
+      'method': 'hard',
+      'iou_thresh': None,  # use the default value based on method.
+      'score_thresh': None,
+      'sigma': None,
+      'max_nms_inputs': 0,
+      'max_output_size': 100,
+  }
 
   # version.
   h.fpn_name = None
@@ -241,6 +264,7 @@ def default_detection_configs():
 
   # No stochastic depth in default.
   h.survival_prob = None
+  h.img_summary_steps = None
 
   h.lr_decay_method = 'cosine'
   h.moving_average_decay = 0.9998
@@ -251,6 +275,9 @@ def default_detection_configs():
   h.backbone_name = 'efficientnet-b1'
   h.backbone_config = None
   h.var_freeze_expr = None
+
+  # A temporary flag to switch between legacy and keras models.
+  h.use_keras_model = None
 
   # RetinaNet.
   h.resnet_depth = 50
@@ -320,7 +347,7 @@ efficientdet_model_param_dict = {
             fpn_num_filters=384,
             fpn_cell_repeats=8,
             box_class_repeats=5,
-            fpn_name='bifpn_sum',  # Use unweighted sum for training stability.
+            fpn_weight_method='sum',  # Use unweighted sum for stability.
         ),
     'efficientdet-d7':
         dict(
@@ -331,7 +358,7 @@ efficientdet_model_param_dict = {
             fpn_cell_repeats=8,
             box_class_repeats=5,
             anchor_scale=5.0,
-            fpn_name='bifpn_sum',  # Use unweighted sum for training stability.
+            fpn_weight_method='sum',  # Use unweighted sum for stability.
         ),
 }
 
@@ -346,7 +373,6 @@ efficientdet_lite_param_dict = {
             fpn_cell_repeats=3,
             box_class_repeats=3,
             act_type='relu',
-            use_native_resize_op=True,
         ),
     'efficientdet-lite1':
         dict(
@@ -357,7 +383,6 @@ efficientdet_lite_param_dict = {
             fpn_cell_repeats=4,
             box_class_repeats=3,
             act_type='relu',
-            use_native_resize_op=True,
         ),
     'efficientdet-lite2':
         dict(
@@ -368,7 +393,6 @@ efficientdet_lite_param_dict = {
             fpn_cell_repeats=5,
             box_class_repeats=3,
             act_type='relu',
-            use_native_resize_op=True,
         ),
     'efficientdet-lite3':
         dict(
@@ -379,7 +403,6 @@ efficientdet_lite_param_dict = {
             fpn_cell_repeats=6,
             box_class_repeats=4,
             act_type='relu',
-            use_native_resize_op=True,
         ),
     'efficientdet-lite4':
         dict(
@@ -390,7 +413,6 @@ efficientdet_lite_param_dict = {
             fpn_cell_repeats=7,
             box_class_repeats=4,
             act_type='relu',
-            use_native_resize_op=True,
         ),
 }
 

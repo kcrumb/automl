@@ -53,27 +53,6 @@ def freeze_vars(variables, pattern):
   return variables
 
 
-def nearest_upsampling(data, height_scale, width_scale, data_format):
-  """Nearest neighbor upsampling implementation."""
-  with tf.name_scope('nearest_upsampling'):
-    # Use reshape to quickly upsample the input. The nearest pixel is selected
-    # implicitly via broadcasting.
-    if data_format == 'channels_first':
-      # Possibly faster for certain GPUs only.
-      bs, c, h, w = data.get_shape().as_list()
-      bs = -1 if bs is None else bs
-      data = tf.reshape(data, [bs, c, h, 1, w, 1]) * tf.ones(
-          [1, 1, 1, height_scale, 1, width_scale], dtype=data.dtype)
-      return tf.reshape(data, [bs, c, h * height_scale, w * width_scale])
-
-    # Normal format for CPU/TPU/GPU.
-    bs, h, w, c = data.get_shape().as_list()
-    bs = -1 if bs is None else bs
-    data = tf.reshape(data, [bs, h, 1, w, 1, c]) * tf.ones(
-        [1, 1, height_scale, 1, width_scale, 1], dtype=data.dtype)
-    return tf.reshape(data, [bs, h * height_scale, w * width_scale, c])
-
-
 def resize_bilinear(images, size, output_type):
   """Returns resized images as output_type."""
   images = tf.image.resize_bilinear(images, size, align_corners=True)
@@ -110,9 +89,7 @@ def resample_feature_map(feat,
                          apply_bn=False,
                          is_training=None,
                          conv_after_downsample=False,
-                         use_native_resize_op=False,
-                         pooling_type=None,
-                         use_tpu=False,
+                         strategy=None,
                          data_format='channels_last'):
   """Resample input feature map to have target number of channels and size."""
   if data_format == 'channels_first':
@@ -142,7 +119,7 @@ def resample_feature_map(feat,
             is_training_bn=is_training,
             act_type=None,
             data_format=data_format,
-            use_tpu=use_tpu,
+            strategy=strategy,
             name='bn')
     return feat
 
@@ -154,75 +131,34 @@ def resample_feature_map(feat,
         feat = _maybe_apply_1x1(feat)
       height_stride_size = int((height - 1) // target_height + 1)
       width_stride_size = int((width - 1) // target_width + 1)
-      if pooling_type == 'max' or pooling_type is None:
-        # Use max pooling in default.
-        feat = tf.layers.max_pooling2d(
-            inputs=feat,
-            pool_size=[height_stride_size + 1, width_stride_size + 1],
-            strides=[height_stride_size, width_stride_size],
-            padding='SAME',
-            data_format=data_format)
-      elif pooling_type == 'avg':
-        feat = tf.layers.average_pooling2d(
-            inputs=feat,
-            pool_size=[height_stride_size + 1, width_stride_size + 1],
-            strides=[height_stride_size, width_stride_size],
-            padding='SAME',
-            data_format=data_format)
-      else:
-        raise ValueError('Unknown pooling type: {}'.format(pooling_type))
+
+      # Use max pooling in default.
+      feat = tf.layers.max_pooling2d(
+          inputs=feat,
+          pool_size=[height_stride_size + 1, width_stride_size + 1],
+          strides=[height_stride_size, width_stride_size],
+          padding='SAME',
+          data_format=data_format)
+
       if conv_after_downsample:
         feat = _maybe_apply_1x1(feat)
     elif height <= target_height and width <= target_width:
       feat = _maybe_apply_1x1(feat)
       if height < target_height or width < target_width:
-        height_scale = target_height // height
-        width_scale = target_width // width
-        if (use_native_resize_op or target_height % height != 0 or
-            target_width % width != 0):
-          if data_format == 'channels_first':
-            feat = tf.transpose(feat, [0, 2, 3, 1])
-          feat = tf.cast(
-              tf.image.resize_nearest_neighbor(
-                  tf.cast(feat, tf.float32), [target_height, target_width]),
-              dtype=feat.dtype)
-          if data_format == 'channels_first':
-            feat = tf.transpose(feat, [0, 3, 1, 2])
-        else:
-          feat = nearest_upsampling(
-              feat,
-              height_scale=height_scale,
-              width_scale=width_scale,
-              data_format=data_format)
+        if data_format == 'channels_first':
+          feat = tf.transpose(feat, [0, 2, 3, 1])
+        feat = tf.cast(
+            tf.image.resize_nearest_neighbor(
+                tf.cast(feat, tf.float32), [target_height, target_width]),
+            dtype=feat.dtype)
+        if data_format == 'channels_first':
+          feat = tf.transpose(feat, [0, 3, 1, 2])
     else:
       raise ValueError(
           'Incompatible target feature map size: target_height: {},'
           'target_width: {}'.format(target_height, target_width))
 
   return feat
-
-
-def _verify_feats_size(feats,
-                       feat_sizes,
-                       min_level,
-                       max_level,
-                       data_format='channels_last'):
-  """Verify the feature map sizes."""
-  expected_output_size = feat_sizes[min_level:max_level + 1]
-  for cnt, size in enumerate(expected_output_size):
-    h_id, w_id = (2, 3) if data_format == 'channels_first' else (1, 2)
-    if feats[cnt].shape[h_id] != size['height']:
-      raise ValueError(
-          'feats[{}] has shape {} but its height should be {}.'
-          '(input_height: {}, min_level: {}, max_level: {}.)'.format(
-              cnt, feats[cnt].shape, size['height'], feat_sizes[0]['height'],
-              min_level, max_level))
-    if feats[cnt].shape[w_id] != size['width']:
-      raise ValueError(
-          'feats[{}] has shape {} but its width should be {}.'
-          '(input_width: {}, min_level: {}, max_level: {}.)'.format(
-              cnt, feats[cnt].shape, size['width'], feat_sizes[0]['width'],
-              min_level, max_level))
 
 
 ###############################################################################
@@ -236,7 +172,7 @@ def class_net(images,
               separable_conv=True,
               repeats=4,
               survival_prob=None,
-              use_tpu=False,
+              strategy=None,
               data_format='channels_last'):
   """Class prediction network."""
   if separable_conv:
@@ -266,7 +202,7 @@ def class_net(images,
         is_training,
         act_type=act_type,
         init_zero=False,
-        use_tpu=use_tpu,
+        strategy=strategy,
         data_format=data_format,
         name='class-%d-bn-%d' % (i, level))
 
@@ -293,7 +229,7 @@ def box_net(images,
             repeats=4,
             separable_conv=True,
             survival_prob=None,
-            use_tpu=False,
+            strategy=None,
             data_format='channels_last'):
   """Box regression network."""
   if separable_conv:
@@ -323,7 +259,7 @@ def box_net(images,
         is_training,
         act_type=act_type,
         init_zero=False,
-        use_tpu=use_tpu,
+        strategy=strategy,
         data_format=data_format,
         name='box-%d-bn-%d' % (i, level))
 
@@ -371,7 +307,7 @@ def build_class_and_box_outputs(feats, config):
           repeats=config.box_class_repeats,
           separable_conv=config.separable_conv,
           survival_prob=config.survival_prob,
-          use_tpu=config.use_tpu,
+          strategy=config.strategy,
           data_format=config.data_format
           )
 
@@ -389,7 +325,7 @@ def build_class_and_box_outputs(feats, config):
           repeats=config.box_class_repeats,
           separable_conv=config.separable_conv,
           survival_prob=config.survival_prob,
-          use_tpu=config.use_tpu,
+          strategy=config.strategy,
           data_format=config.data_format)
 
   return class_outputs, box_outputs
@@ -414,7 +350,7 @@ def build_backbone(features, config):
   if 'efficientnet' in backbone_name:
     override_params = {
         'batch_norm':
-            utils.batch_norm_class(is_training_bn, config.use_tpu),
+            utils.batch_norm_class(is_training_bn, config.strategy),
         'relu_fn':
             functools.partial(utils.activation_fn, act_type=config.act_type),
     }
@@ -475,13 +411,11 @@ def build_feature_network(features, config):
               apply_bn=config.apply_bn_for_resampling,
               is_training=config.is_training_bn,
               conv_after_downsample=config.conv_after_downsample,
-              use_native_resize_op=config.use_native_resize_op,
-              pooling_type=config.pooling_type,
-              use_tpu=config.use_tpu,
+              strategy=config.strategy,
               data_format=config.data_format
           ))
 
-  _verify_feats_size(
+  utils.verify_feats_size(
       feats,
       feat_sizes=feat_sizes,
       min_level=config.min_level,
@@ -500,7 +434,7 @@ def build_feature_network(features, config):
                 config.min_level, config.max_level + 1)
         ]
 
-        _verify_feats_size(
+        utils.verify_feats_size(
             feats,
             feat_sizes=feat_sizes,
             min_level=config.min_level,
@@ -508,30 +442,6 @@ def build_feature_network(features, config):
             data_format=config.data_format)
 
   return new_feats
-
-
-def bifpn_sum_config():
-  """BiFPN config with sum."""
-  p = hparams_config.Config()
-  p.nodes = [
-      {'feat_level': 6, 'inputs_offsets': [3, 4]},
-      {'feat_level': 5, 'inputs_offsets': [2, 5]},
-      {'feat_level': 4, 'inputs_offsets': [1, 6]},
-      {'feat_level': 3, 'inputs_offsets': [0, 7]},
-      {'feat_level': 4, 'inputs_offsets': [1, 7, 8]},
-      {'feat_level': 5, 'inputs_offsets': [2, 6, 9]},
-      {'feat_level': 6, 'inputs_offsets': [3, 5, 10]},
-      {'feat_level': 7, 'inputs_offsets': [4, 11]},
-  ]
-  p.weight_method = 'sum'
-  return p
-
-
-def bifpn_fa_config():
-  """BiFPN config with fast weighted sum."""
-  p = bifpn_sum_config()
-  p.weight_method = 'fastattn'
-  return p
 
 
 def bifpn_dynamic_config(min_level, max_level, weight_method):
@@ -587,10 +497,8 @@ def bifpn_dynamic_config(min_level, max_level, weight_method):
 def get_fpn_config(fpn_name, min_level, max_level, weight_method):
   """Get fpn related configuration."""
   if not fpn_name:
-    fpn_name = 'bifpn_fa'
+    fpn_name = 'bifpn_dyn'
   name_to_config = {
-      'bifpn_sum': bifpn_sum_config(),
-      'bifpn_fa': bifpn_fa_config(),
       'bifpn_dyn': bifpn_dynamic_config(min_level, max_level, weight_method)
   }
   return name_to_config[fpn_name]
@@ -621,6 +529,27 @@ def fuse_features(nodes, weight_method):
     edge_weights = [
         tf.nn.relu(tf.cast(tf.Variable(1.0, name='WSM'), dtype=dtype))
         for _ in nodes
+    ]
+    weights_sum = tf.add_n(edge_weights)
+    nodes = [nodes[i] * edge_weights[i] / (weights_sum + 0.0001)
+             for i in range(len(nodes))]
+    new_node = tf.add_n(nodes)
+  elif weight_method == 'channel_attn':
+    num_filters = int(nodes[0].shape[-1])
+    edge_weights = [
+        tf.cast(
+            tf.Variable(lambda: tf.ones([num_filters]), name='WSM'),
+            dtype=dtype) for _ in nodes
+    ]
+    normalized_weights = tf.nn.softmax(tf.stack(edge_weights, -1), axis=-1)
+    nodes = tf.stack(nodes, axis=-1)
+    new_node = tf.reduce_sum(nodes * normalized_weights, -1)
+  elif weight_method == 'channel_fastattn':
+    num_filters = int(nodes[0].shape[-1])
+    edge_weights = [
+        tf.nn.relu(tf.cast(
+            tf.Variable(lambda: tf.ones([num_filters]), name='WSM'),
+            dtype=dtype)) for _ in nodes
     ]
     weights_sum = tf.add_n(edge_weights)
     nodes = [nodes[i] * edge_weights[i] / (weights_sum + 0.0001)
@@ -659,9 +588,7 @@ def build_bifpn_layer(feats, feat_sizes, config):
             new_node_height, new_node_width, p.fpn_num_filters,
             p.apply_bn_for_resampling, p.is_training_bn,
             p.conv_after_downsample,
-            p.use_native_resize_op,
-            p.pooling_type,
-            use_tpu=p.use_tpu,
+            strategy=p.strategy,
             data_format=config.data_format)
         nodes.append(input_node)
 
@@ -682,7 +609,7 @@ def build_bifpn_layer(feats, feat_sizes, config):
             filters=p.fpn_num_filters,
             kernel_size=(3, 3),
             padding='same',
-            use_bias=True if not p.conv_bn_act_pattern else False,
+            use_bias=not p.conv_bn_act_pattern,
             data_format=config.data_format,
             name='conv')
 
@@ -691,7 +618,7 @@ def build_bifpn_layer(feats, feat_sizes, config):
             is_training_bn=p.is_training_bn,
             act_type=None if not p.conv_bn_act_pattern else p.act_type,
             data_format=config.data_format,
-            use_tpu=p.use_tpu,
+            strategy=p.strategy,
             name='bn')
 
       feats.append(new_node)

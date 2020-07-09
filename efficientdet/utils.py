@@ -22,14 +22,23 @@ from __future__ import print_function
 import contextlib
 import os
 import re
+from typing import Text, Tuple, Union
 from absl import logging
 import numpy as np
 import tensorflow.compat.v1 as tf
 import tensorflow.compat.v2 as tf2
-from typing import Text, Tuple, Union
 
 from tensorflow.python.tpu import tpu_function  # pylint:disable=g-direct-tensorflow-import
 # pylint: disable=logging-format-interpolation
+
+
+def srelu_fn(x):
+  """Smooth relu: a smooth version of relu."""
+  with tf.name_scope('srelu'):
+    beta = tf.Variable(20.0, name='srelu_beta', dtype=tf.float32)**2
+    beta = tf.cast(beta, x.dtype)
+    safe_log = tf.math.log(tf.where(x > 0., beta * x + 1., tf.ones_like(x)))
+    return tf.where((x > 0.), x - (1. / beta) * safe_log, tf.zeros_like(x))
 
 
 def activation_fn(features: tf.Tensor, act_type: Text):
@@ -38,10 +47,16 @@ def activation_fn(features: tf.Tensor, act_type: Text):
     return tf.nn.swish(features)
   elif act_type == 'swish_native':
     return features * tf.sigmoid(features)
+  elif act_type == 'hswish':
+    return features * tf.nn.relu6(features + 3) / 6
   elif act_type == 'relu':
     return tf.nn.relu(features)
   elif act_type == 'relu6':
     return tf.nn.relu6(features)
+  elif act_type == 'mish':
+    return features * tf.math.tanh(tf.math.softplus(features))
+  elif act_type == 'srelu':
+    return srelu_fn(features)
   else:
     raise ValueError('Unsupported act_type {}'.format(act_type))
 
@@ -212,8 +227,45 @@ class TpuBatchNormalization(tf.keras.layers.BatchNormalization):
     else:
       return (shard_mean, shard_variance)
 
-  def call(self, *args, **kwargs):
-    outputs = super(TpuBatchNormalization, self).call(*args, **kwargs)
+  def call(self, inputs, training=None):
+    outputs = super(TpuBatchNormalization, self).call(inputs, training)
+    # A temporary hack for tf1 compatibility with keras batch norm.
+    for u in self.updates:
+      tf.add_to_collection(tf.GraphKeys.UPDATE_OPS, u)
+    return outputs
+
+
+class SyncBatchNormalization(tf.keras.layers.BatchNormalization):
+  """Cross replica batch normalization."""
+
+  def __init__(self, fused=False, sync=False, **kwargs):
+    if fused in (True, None):
+      raise ValueError('SyncBatchNormalization does not support fused=True.')
+    if not kwargs.get('name', None):
+      kwargs['name'] = 'tpu_batch_normalization'
+    self._sync = sync
+    super(SyncBatchNormalization, self).__init__(fused=fused, **kwargs)
+
+  def _moments(self, inputs, reduction_axes, keep_dims):
+    """Compute the mean and variance: it overrides the original _moments."""
+    import horovod.tensorflow as hvd  # pylint: disable=g-import-not-at-top
+    shard_mean, shard_variance = super(SyncBatchNormalization, self)._moments(
+        inputs, reduction_axes, keep_dims=keep_dims)
+
+    num_shards = hvd.size()
+    if num_shards > 1 and self._sync:  # sync bn is 4x slower than non-sync.
+      # Compute variance using: Var[X]= E[X^2] - E[X]^2.
+      shard_square_of_mean = tf.math.square(shard_mean)
+      shard_mean_of_square = shard_variance + shard_square_of_mean
+      shard_stack = tf.stack([shard_mean, shard_mean_of_square])
+      group_mean, group_mean_of_square = tf.unstack(hvd.allreduce(shard_stack))
+      group_variance = group_mean_of_square - tf.math.square(group_mean)
+      return (group_mean, group_variance)
+    else:
+      return (shard_mean, shard_variance)
+
+  def call(self, inputs, training=None):
+    outputs = super(SyncBatchNormalization, self).call(inputs, training)
     # A temporary hack for tf1 compatibility with keras batch norm.
     for u in self.updates:
       tf.add_to_collection(tf.GraphKeys.UPDATE_OPS, u)
@@ -228,24 +280,26 @@ class BatchNormalization(tf.keras.layers.BatchNormalization):
       kwargs['name'] = 'tpu_batch_normalization'
     super(BatchNormalization, self).__init__(**kwargs)
 
-  def call(self, *args, **kwargs):
-    outputs = super(BatchNormalization, self).call(*args, **kwargs)
+  def call(self, inputs, training=None):
+    outputs = super(BatchNormalization, self).call(inputs, training)
     # A temporary hack for tf1 compatibility with keras batch norm.
     for u in self.updates:
       tf.add_to_collection(tf.GraphKeys.UPDATE_OPS, u)
     return outputs
 
 
-def batch_norm_class(is_training, use_tpu=False):
-  if is_training and use_tpu:
+def batch_norm_class(is_training, strategy=None):
+  if is_training and strategy == 'tpu':
     return TpuBatchNormalization
+  elif is_training and strategy == 'horovod':
+    return SyncBatchNormalization
   else:
     return BatchNormalization
 
 
-def batch_normalization(inputs, training=False, use_tpu=False, **kwargs):
+def batch_normalization(inputs, training=False, strategy=None, **kwargs):
   """A wrapper for TpuBatchNormalization."""
-  bn_layer = batch_norm_class(training, use_tpu)(**kwargs)
+  bn_layer = batch_norm_class(training, strategy)(**kwargs)
   return bn_layer(inputs, training=training)
 
 
@@ -256,7 +310,7 @@ def batch_norm_act(inputs,
                    data_format: Text = 'channels_last',
                    momentum: float = 0.99,
                    epsilon: float = 1e-3,
-                   use_tpu: bool = False,
+                   strategy: Text = None,
                    name: Text = None):
   """Performs a batch normalization followed by a non-linear activation.
 
@@ -270,7 +324,7 @@ def batch_norm_act(inputs,
       width]` or "channels_last for `[batch, height, width, channels]`.
     momentum: `float`, momentume of batch norm.
     epsilon: `float`, small value for numerical stability.
-    use_tpu: `bool`, whether to use tpu version of batch norm.
+    strategy: string to specify training strategy for TPU/GPU/CPU.
     name: the name of the batch normalization layer
 
   Returns:
@@ -294,7 +348,7 @@ def batch_norm_act(inputs,
       center=True,
       scale=True,
       training=is_training_bn,
-      use_tpu=use_tpu,
+      strategy=strategy,
       gamma_initializer=gamma_initializer,
       name=name)
 
@@ -352,38 +406,52 @@ class Pair(tuple):
 
 def scalar(name, tensor):
   """Stores a (name, Tensor) tuple in a custom collection."""
-  logging.info('Adding summary {}'.format(Pair(name, tensor)))
-  tf.add_to_collection('edsummaries', Pair(name, tf.reduce_mean(tensor)))
+  logging.info('Adding scale summary {}'.format(Pair(name, tensor)))
+  tf.add_to_collection('scalar_summaries', Pair(name, tf.reduce_mean(tensor)))
 
 
-def get_scalar_summaries():
-  """Returns the list of (name, Tensor) summaries recorded by scalar()."""
-  return tf.get_collection('edsummaries')
+def image(name, tensor):
+  logging.info('Adding image summary {}'.format(Pair(name, tensor)))
+  tf.add_to_collection('image_summaries', Pair(name, tensor))
 
 
 def get_tpu_host_call(global_step, params):
   """Get TPU host call for summaries."""
-  summaries = get_scalar_summaries()
-  if not summaries:
-    # No summaries to write.
-    return None
+  scalar_summaries = tf.get_collection('scalar_summaries')
+  if params['img_summary_steps']:
+    image_summaries = tf.get_collection('image_summaries')
+  else:
+    image_summaries = []
+  if not scalar_summaries and not image_summaries:
+    return None  # No summaries to write.
 
   model_dir = params['model_dir']
   iterations_per_loop = params.get('iterations_per_loop', 100)
+  img_steps = params['img_summary_steps']
 
   def host_call_fn(global_step, *args):
-    """Training host call. Creates scalar summaries for training metrics."""
+    """Training host call. Creates summaries for training metrics."""
     gs = global_step[0]
     with tf2.summary.create_file_writer(
         model_dir, max_queue=iterations_per_loop).as_default():
       with tf2.summary.record_if(True):
-        for i in range(len(summaries)):
-          name = summaries[i][0]
+        for i, _ in enumerate(scalar_summaries):
+          name = scalar_summaries[i][0]
           tensor = args[i][0]
           tf2.summary.scalar(name, tensor, step=gs)
-        return tf.summary.all_v2_summary_ops()
 
-  reshaped_tensors = [tf.reshape(t, [1]) for _, t in summaries]
+      if img_steps:
+        with tf2.summary.record_if(lambda: tf.math.equal(gs % img_steps, 0)):
+          # Log images every 1k steps.
+          for i, _ in enumerate(image_summaries):
+            name = image_summaries[i][0]
+            tensor = args[i + len(scalar_summaries)]
+            tf2.summary.image(name, tensor, step=gs)
+
+      return tf.summary.all_v2_summary_ops()
+
+  reshaped_tensors = [tf.reshape(t, [1]) for _, t in scalar_summaries]
+  reshaped_tensors += [t for _, t in image_summaries]
   global_step_t = tf.reshape(global_step, [1])
   return host_call_fn, [global_step_t] + reshaped_tensors
 
@@ -484,6 +552,46 @@ def get_feat_sizes(image_size: Union[Text, int, Tuple[int, int]],
   return feat_sizes
 
 
+def verify_feats_size(feats,
+                      feat_sizes,
+                      min_level,
+                      max_level,
+                      data_format='channels_last'):
+  """Verify the feature map sizes."""
+  expected_output_size = feat_sizes[min_level:max_level + 1]
+  for cnt, size in enumerate(expected_output_size):
+    h_id, w_id = (2, 3) if data_format == 'channels_first' else (1, 2)
+    if feats[cnt].shape[h_id] != size['height']:
+      raise ValueError(
+          'feats[{}] has shape {} but its height should be {}.'
+          '(input_height: {}, min_level: {}, max_level: {}.)'.format(
+              cnt, feats[cnt].shape, size['height'], feat_sizes[0]['height'],
+              min_level, max_level))
+    if feats[cnt].shape[w_id] != size['width']:
+      raise ValueError(
+          'feats[{}] has shape {} but its width should be {}.'
+          '(input_width: {}, min_level: {}, max_level: {}.)'.format(
+              cnt, feats[cnt].shape, size['width'], feat_sizes[0]['width'],
+              min_level, max_level))
+
+
+def get_precision(strategy: str, mixed_precision: bool = False):
+  """Get the precision policy for a given strategy."""
+  if mixed_precision:
+    if strategy == 'tpu':
+      return 'mixed_bfloat16'
+
+    if tf.config.experimental.list_physical_devices('GPU'):
+      return 'mixed_float16'
+
+    # TODO(fsx950223): Fix CPU float16 inference
+    # https://github.com/google/automl/issues/504
+    logging.warning('float16 is not supported for CPU, use float32 instead')
+    return 'float32'
+
+  return 'float32'
+
+
 @contextlib.contextmanager
 def float16_scope():
   """Scope class for float16."""
@@ -504,12 +612,13 @@ def float16_scope():
     yield varscope
 
 
-def set_precision_policy(policy_name: Text = None):
+def set_precision_policy(policy_name: Text = None, loss_scale: bool = False):
   """Set precision policy according to the name.
 
   Args:
     policy_name: precision policy name, one of 'float32', 'mixed_float16',
       'mixed_bfloat16', or None.
+    loss_scale: whether to use loss scale (only for training).
   """
   if not policy_name:
     return
@@ -522,12 +631,15 @@ def set_precision_policy(policy_name: Text = None):
   base_layer_utils.enable_v2_dtype_behavior()
   # mixed_float16 training is not supported for now, so disable loss_scale.
   # float32 and mixed_bfloat16 do not need loss scale for training.
-  policy = tf2.keras.mixed_precision.experimental.Policy(
-      policy_name, loss_scale=None)
+  if loss_scale:
+    policy = tf2.keras.mixed_precision.experimental.Policy(policy_name)
+  else:
+    policy = tf2.keras.mixed_precision.experimental.Policy(
+        policy_name, loss_scale=None)
   tf2.keras.mixed_precision.experimental.set_policy(policy)
 
 
-def build_model_with_precision(pp, mm, ii, *args, **kwargs):
+def build_model_with_precision(pp, mm, ii, tt, *args, **kwargs):
   """Build model with its inputs/params for a specified precision context.
 
   This is highly specific to this codebase, and not intended to be general API.
@@ -538,6 +650,7 @@ def build_model_with_precision(pp, mm, ii, *args, **kwargs):
     pp: A string, precision policy name, such as "mixed_float16".
     mm: A function, for rmodel builder.
     ii: A tensor, for model inputs.
+    tt: A bool, If true, it is for training; otherwise, it is for eval.
     *args: A list of model arguments.
     **kwargs: A dict, extra model parameters.
 
@@ -551,7 +664,7 @@ def build_model_with_precision(pp, mm, ii, *args, **kwargs):
       outputs = mm(inputs, *args, **kwargs)
     set_precision_policy('float32')
   elif pp == 'mixed_float16':
-    set_precision_policy(pp)
+    set_precision_policy(pp, loss_scale=tt)
     inputs = tf.cast(ii, tf.float16)
     with float16_scope():
       outputs = mm(inputs, *args, **kwargs)

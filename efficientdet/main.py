@@ -31,7 +31,6 @@ import det_model_fn
 import hparams_config
 import utils
 
-
 # Cloud TPU Cluster Resolvers
 flags.DEFINE_string(
     'tpu', default=None,
@@ -52,11 +51,14 @@ flags.DEFINE_string(
     'eval_master', default='',
     help='GRPC URL of the eval master. Set to an appropriate value when running'
     ' on CPU/GPU')
-flags.DEFINE_bool('use_tpu', True, 'Use TPUs rather than CPUs/GPUs')
+flags.DEFINE_string('eval_name', default=None, help='Eval job name')
+flags.DEFINE_enum('strategy', None, ['tpu', 'horovod', ''],
+                  'Training: horovod for multi-gpu, if None, use TF default.')
+
 flags.DEFINE_bool('use_fake_data', False, 'Use fake input.')
 flags.DEFINE_bool(
     'use_xla', False,
-    'Use XLA even if use_tpu is false.  If use_tpu is true, we always use XLA, '
+    'Use XLA even if strategy is not tpu. If strategy is tpu, always use XLA, '
     'and this flag has no effect.')
 flags.DEFINE_string('model_dir', None, 'Location of model_dir')
 flags.DEFINE_string('backbone_ckpt', '',
@@ -81,17 +83,15 @@ flags.DEFINE_integer('train_batch_size', 64, 'training batch size')
 flags.DEFINE_integer('eval_batch_size', 1, 'evaluation batch size')
 flags.DEFINE_integer('eval_samples', 5000, 'The number of samples for '
                      'evaluation.')
-flags.DEFINE_integer(
-    'iterations_per_loop', 100, 'Number of iterations per TPU training loop')
+flags.DEFINE_integer('iterations_per_loop', 100,
+                     'Number of iterations per TPU training loop')
 flags.DEFINE_string(
     'training_file_pattern', None,
     'Glob for training data files (e.g., COCO train - minival set)')
+flags.DEFINE_string('validation_file_pattern', None,
+                    'Glob for evaluation tfrecords (e.g., COCO val2017 set)')
 flags.DEFINE_string(
-    'validation_file_pattern', None,
-    'Glob for evaluation tfrecords (e.g., COCO val2017 set)')
-flags.DEFINE_string(
-    'val_json_file',
-    None,
+    'val_json_file', None,
     'COCO validation JSON containing golden bounding boxes. If None, use the '
     'ground truth from the dataloader. Ignored if testdev_dir is not None.')
 flags.DEFINE_string('testdev_dir', None,
@@ -108,7 +108,6 @@ flags.DEFINE_bool('eval_after_training', False, 'Run one eval after the '
 flags.DEFINE_integer(
     'tf_random_seed', None, 'Sets the TF graph seed for deterministic execution'
     ' across runs (for debugging).')
-flags.DEFINE_bool('use_horovod', None, 'Use horovod for multi-gpu training')
 
 # For Eval mode
 flags.DEFINE_integer('min_eval_interval', 180,
@@ -122,7 +121,7 @@ FLAGS = flags.FLAGS
 
 def main(_):
 
-  if FLAGS.use_horovod:
+  if FLAGS.strategy == 'horovod':
     import horovod.tensorflow as hvd  # pylint: disable=g-import-not-at-top
     logging.info('Use horovod with multi gpus')
     hvd.init()
@@ -130,7 +129,7 @@ def main(_):
   import tensorflow.compat.v1 as tf  # pylint: disable=g-import-not-at-top
   tf.disable_eager_execution()
 
-  if FLAGS.use_tpu:
+  if FLAGS.strategy == 'tpu':
     tpu_cluster_resolver = tf.distribute.cluster_resolver.TPUClusterResolver(
         FLAGS.tpu,
         zone=FLAGS.tpu_zone,
@@ -206,8 +205,7 @@ def main(_):
         labels_partition_dims['box_targets_%d' % level] = None
         labels_partition_dims['cls_targets_%d' % level] = None
     num_cores_per_replica = FLAGS.num_cores_per_replica
-    input_partition_dims = [
-        FLAGS.input_partition_dims, labels_partition_dims]
+    input_partition_dims = [FLAGS.input_partition_dims, labels_partition_dims]
     num_shards = FLAGS.num_cores // num_cores_per_replica
   else:
     num_cores_per_replica = None
@@ -217,24 +215,22 @@ def main(_):
   params = dict(
       config.as_dict(),
       model_name=FLAGS.model_name,
-
       iterations_per_loop=FLAGS.iterations_per_loop,
       model_dir=FLAGS.model_dir,
       num_shards=num_shards,
       num_examples_per_epoch=FLAGS.num_examples_per_epoch,
-      use_tpu=FLAGS.use_tpu,
+      strategy=FLAGS.strategy,
       backbone_ckpt=FLAGS.backbone_ckpt,
       ckpt=FLAGS.ckpt,
       val_json_file=FLAGS.val_json_file,
       testdev_dir=FLAGS.testdev_dir,
-      mode=FLAGS.mode,
-      use_horovod=FLAGS.use_horovod
-  )
+      mode=FLAGS.mode)
   config_proto = tf.ConfigProto(
       allow_soft_placement=True, log_device_placement=False)
-  if FLAGS.use_xla and not FLAGS.use_tpu:
+  if FLAGS.use_xla and FLAGS.strategy != 'tpu':
     config_proto.graph_options.optimizer_options.global_jit_level = (
         tf.OptimizerOptions.ON_1)
+    config_proto.gpu_options.allow_growth = True
 
   tpu_config = tf.estimator.tpu.TPUConfig(
       FLAGS.iterations_per_loop,
@@ -244,7 +240,7 @@ def main(_):
       per_host_input_for_training=tf.estimator.tpu.InputPipelineConfig
       .PER_HOST_V2)
 
-  if FLAGS.use_horovod:
+  if FLAGS.strategy == 'horovod':
     model_dir = FLAGS.model_dir if hvd.rank() == 0 else None
   else:
     model_dir = FLAGS.model_dir
@@ -260,20 +256,24 @@ def main(_):
   )
 
   model_fn_instance = det_model_fn.get_model_fn(FLAGS.model_name)
+  max_instances_per_image = config.max_instances_per_image
+  use_tpu = (FLAGS.strategy == 'tpu')
 
   # TPU Estimator
   logging.info(params)
   if FLAGS.mode == 'train':
     train_estimator = tf.estimator.tpu.TPUEstimator(
         model_fn=model_fn_instance,
-        use_tpu=FLAGS.use_tpu,
+        use_tpu=use_tpu,
         train_batch_size=FLAGS.train_batch_size,
         config=run_config,
         params=params)
     train_estimator.train(
-        input_fn=dataloader.InputReader(FLAGS.training_file_pattern,
-                                        is_training=True,
-                                        use_fake_data=FLAGS.use_fake_data),
+        input_fn=dataloader.InputReader(
+            FLAGS.training_file_pattern,
+            is_training=True,
+            use_fake_data=FLAGS.use_fake_data,
+            max_instances_per_image=max_instances_per_image),
         max_steps=int((config.num_epochs * FLAGS.num_examples_per_epoch) /
                       FLAGS.train_batch_size))
 
@@ -281,22 +281,25 @@ def main(_):
       # Run evaluation after training finishes.
       eval_params = dict(
           params,
-          use_tpu=FLAGS.use_tpu,
+          strategy=FLAGS.strategy,
           input_rand_hflip=False,
           is_training_bn=False,
-          precision=None,
+          mixed_precision=None,
       )
       eval_estimator = tf.estimator.tpu.TPUEstimator(
           model_fn=model_fn_instance,
-          use_tpu=FLAGS.use_tpu,
+          use_tpu=use_tpu,
           train_batch_size=FLAGS.train_batch_size,
           eval_batch_size=FLAGS.eval_batch_size,
           config=run_config,
           params=eval_params)
       eval_results = eval_estimator.evaluate(
-          input_fn=dataloader.InputReader(FLAGS.validation_file_pattern,
-                                          is_training=False),
-          steps=FLAGS.eval_samples//FLAGS.eval_batch_size)
+          input_fn=dataloader.InputReader(
+              FLAGS.validation_file_pattern,
+              is_training=False,
+              max_instances_per_image=max_instances_per_image),
+          steps=FLAGS.eval_samples // FLAGS.eval_batch_size,
+          name=FLAGS.eval_name)
       logging.info('Eval results: %s', eval_results)
       ckpt = tf.train.latest_checkpoint(FLAGS.model_dir)
       utils.archive_ckpt(eval_results, eval_results['AP'], ckpt)
@@ -306,15 +309,15 @@ def main(_):
     # and don't run on the TPU.
     eval_params = dict(
         params,
-        use_tpu=FLAGS.use_tpu,
+        strategy=FLAGS.strategy,
         input_rand_hflip=False,
         is_training_bn=False,
-        precision=None,
+        mixed_precision=None,
     )
 
     eval_estimator = tf.estimator.tpu.TPUEstimator(
         model_fn=model_fn_instance,
-        use_tpu=FLAGS.use_tpu,
+        use_tpu=use_tpu,
         train_batch_size=FLAGS.train_batch_size,
         eval_batch_size=FLAGS.eval_batch_size,
         config=run_config,
@@ -335,9 +338,12 @@ def main(_):
       logging.info('Starting to evaluate.')
       try:
         eval_results = eval_estimator.evaluate(
-            input_fn=dataloader.InputReader(FLAGS.validation_file_pattern,
-                                            is_training=False),
-            steps=FLAGS.eval_samples//FLAGS.eval_batch_size)
+            input_fn=dataloader.InputReader(
+                FLAGS.validation_file_pattern,
+                is_training=False,
+                max_instances_per_image=max_instances_per_image),
+            steps=FLAGS.eval_samples // FLAGS.eval_batch_size,
+            name=FLAGS.eval_name)
         logging.info('Eval results: %s', eval_results)
 
         # Terminate eval job when final checkpoint is reached.
@@ -368,36 +374,41 @@ def main(_):
       logging.info('Starting training cycle, epoch: %d.', cycle)
       train_estimator = tf.estimator.tpu.TPUEstimator(
           model_fn=model_fn_instance,
-          use_tpu=FLAGS.use_tpu,
+          use_tpu=use_tpu,
           train_batch_size=FLAGS.train_batch_size,
           config=run_config,
           params=params)
       train_estimator.train(
-          input_fn=dataloader.InputReader(FLAGS.training_file_pattern,
-                                          is_training=True,
-                                          use_fake_data=FLAGS.use_fake_data),
+          input_fn=dataloader.InputReader(
+              FLAGS.training_file_pattern,
+              is_training=True,
+              use_fake_data=FLAGS.use_fake_data,
+              max_instances_per_image=max_instances_per_image),
           steps=int(FLAGS.num_examples_per_epoch / FLAGS.train_batch_size))
 
       logging.info('Starting evaluation cycle, epoch: %d.', cycle)
       # Run evaluation after every epoch.
       eval_params = dict(
           params,
-          use_tpu=FLAGS.use_tpu,
+          strategy=FLAGS.strategy,
           input_rand_hflip=False,
           is_training_bn=False,
       )
 
       eval_estimator = tf.estimator.tpu.TPUEstimator(
           model_fn=model_fn_instance,
-          use_tpu=FLAGS.use_tpu,
+          use_tpu=use_tpu,
           train_batch_size=FLAGS.train_batch_size,
           eval_batch_size=FLAGS.eval_batch_size,
           config=run_config,
           params=eval_params)
       eval_results = eval_estimator.evaluate(
-          input_fn=dataloader.InputReader(FLAGS.validation_file_pattern,
-                                          is_training=False),
-          steps=FLAGS.eval_samples//FLAGS.eval_batch_size)
+          input_fn=dataloader.InputReader(
+              FLAGS.validation_file_pattern,
+              is_training=False,
+              max_instances_per_image=max_instances_per_image),
+          steps=FLAGS.eval_samples // FLAGS.eval_batch_size,
+          name=FLAGS.eval_name)
       logging.info('Evaluation results: %s', eval_results)
       ckpt = tf.train.latest_checkpoint(FLAGS.model_dir)
       utils.archive_ckpt(eval_results, eval_results['AP'], ckpt)
@@ -407,5 +418,4 @@ def main(_):
 
 
 if __name__ == '__main__':
-  logging.set_verbosity(logging.WARNING)
   app.run(main)

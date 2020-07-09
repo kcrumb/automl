@@ -21,6 +21,7 @@ from __future__ import print_function
 
 import os
 import time
+from typing import Text, Tuple, List
 
 from absl import app
 from absl import flags
@@ -29,7 +30,6 @@ from absl import logging
 import numpy as np
 from PIL import Image
 import tensorflow.compat.v1 as tf
-from typing import Text, Tuple, List
 
 import hparams_config
 import inference
@@ -46,7 +46,7 @@ flags.DEFINE_integer('bm_runs', 10, 'Number of benchmark runs.')
 flags.DEFINE_string('tensorrt', None, 'TensorRT mode: {None, FP32, FP16, INT8}')
 flags.DEFINE_bool('delete_logdir', True, 'Whether to delete logdir.')
 flags.DEFINE_bool('freeze', False, 'Freeze graph.')
-flags.DEFINE_bool('xla', False, 'Run with xla optimization.')
+flags.DEFINE_bool('use_xla', False, 'Run with xla optimization.')
 flags.DEFINE_integer('batch_size', 1, 'Batch size for inference.')
 
 flags.DEFINE_string('ckpt_path', None, 'checkpoint dir used for eval.')
@@ -102,6 +102,7 @@ class ModelInspector(object):
 
     model_config = hparams_config.get_detection_config(model_name)
     model_config.override(hparams)  # Add custom overrides
+    model_config.is_training_bn = False
     model_config.image_size = utils.parse_image_size(model_config.image_size)
 
     # If batch size is 0, then build a graph with dynamic batch size.
@@ -116,16 +117,13 @@ class ModelInspector(object):
 
     self.model_config = model_config
 
-  def build_model(self,
-                  inputs: tf.Tensor,
-                  is_training: bool = False) -> List[tf.Tensor]:
+  def build_model(self, inputs: tf.Tensor) -> List[tf.Tensor]:
     """Build model with inputs and labels and print out model stats."""
     logging.info('start building model')
     cls_outputs, box_outputs = inference.build_model(
         self.model_name,
         inputs,
-        is_training_bn=is_training,
-        config=self.model_config)
+        **self.model_config)
 
     # Write to tfevent for tensorboard.
     train_writer = tf.summary.FileWriter(self.logdir)
@@ -146,7 +144,7 @@ class ModelInspector(object):
         model_params=self.model_config.as_dict(),
         **kwargs)
     driver.build()
-    driver.export(self.saved_model_dir, tflite_path=self.tflite_path)
+    driver.export(self.saved_model_dir, self.tflite_path, self.tensorrt)
 
   def saved_model_inference(self, image_path_pattern, output_dir, **kwargs):
     """Perform inference for the given saved model."""
@@ -259,7 +257,7 @@ class ModelInspector(object):
     with tf.Graph().as_default(), tf.Session() as sess:
       # Build model with inputs and labels.
       inputs = tf.placeholder(tf.float32, name='input', shape=self.inputs_shape)
-      outputs = self.build_model(inputs, is_training=False)
+      outputs = self.build_model(inputs)
 
       # Run the model
       inputs_val = np.random.rand(*self.inputs_shape).astype(float)
@@ -288,7 +286,7 @@ class ModelInspector(object):
     with tf.Graph().as_default(), tf.Session() as sess:
       # Build model with inputs and labels.
       inputs = tf.placeholder(tf.float32, name='input', shape=self.inputs_shape)
-      self.build_model(inputs, is_training=False)
+      self.build_model(inputs)
       inference.restore_ckpt(sess, self.ckpt_path,
                              self.model_config.moving_average_decay,
                              self.export_ckpt)
@@ -297,7 +295,7 @@ class ModelInspector(object):
     """Freeze model and convert them into tflite and tf graph."""
     with tf.Graph().as_default(), tf.Session() as sess:
       inputs = tf.placeholder(tf.float32, name='input', shape=self.inputs_shape)
-      outputs = self.build_model(inputs, is_training=False)
+      outputs = self.build_model(inputs)
 
       if self.ckpt_path:
         # Load the true weights if available.
@@ -339,7 +337,6 @@ class ModelInspector(object):
     else:
       sess_config = tf.ConfigProto()
 
-    # rewriter_config_pb2.RewriterConfig.OFF
     sess_config.graph_options.rewrite_options.dependency_optimization = 2
     if self.use_xla:
       sess_config.graph_options.optimizer_options.global_jit_level = (
@@ -347,7 +344,7 @@ class ModelInspector(object):
 
     with tf.Graph().as_default(), tf.Session(config=sess_config) as sess:
       inputs = tf.placeholder(tf.float32, name='input', shape=self.inputs_shape)
-      output = self.build_model(inputs, is_training=False)
+      output = self.build_model(inputs)
 
       img = np.random.uniform(size=self.inputs_shape)
 
@@ -465,7 +462,7 @@ def main(_):
       model_name=FLAGS.model_name,
       logdir=FLAGS.logdir,
       tensorrt=FLAGS.tensorrt,
-      use_xla=FLAGS.xla,
+      use_xla=FLAGS.use_xla,
       ckpt_path=FLAGS.ckpt_path,
       export_ckpt=FLAGS.export_ckpt,
       saved_model_dir=FLAGS.saved_model_dir,

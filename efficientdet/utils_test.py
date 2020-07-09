@@ -107,11 +107,44 @@ class UtilsTest(tf.test.TestCase):
       return tf.cast(a, inputs.dtype) * conv(x) * inputs
 
     x = tf.constant(2.0, dtype=tf.float32)  # input can be any type.
-    out = utils.build_model_with_precision('mixed_float16', _model, x)
+    out = utils.build_model_with_precision('mixed_float16', _model, x, False)
     # Variables should be float32.
     for v in tf.global_variables():
       self.assertIn(v.dtype, (tf.float32, tf.dtypes.as_dtype('float32_ref')))
     self.assertIs(out.dtype, tf.float16)  # output should be float16.
+
+
+class ActivationTest(tf.test.TestCase):
+
+  def test_swish(self):
+    features = tf.constant([.5, 10])
+
+    result = utils.activation_fn(features, 'swish')
+    expected = features * tf.sigmoid(features)
+    self.assertAllClose(result, expected)
+
+    result = utils.activation_fn(features, 'swish_native')
+    self.assertAllClose(result, expected)
+
+  def test_hswish(self):
+    features = tf.constant([.5, 10])
+    result = utils.activation_fn(features, 'hswish')
+    self.assertAllClose(result, [0.29166667, 10.0])
+
+  def test_relu(self):
+    features = tf.constant([.5, 10])
+    result = utils.activation_fn(features, 'relu')
+    self.assertAllClose(result, [0.5, 10])
+
+  def test_relu6(self):
+    features = tf.constant([.5, 10])
+    result = utils.activation_fn(features, 'relu6')
+    self.assertAllClose(result, [0.5, 6])
+
+  def test_mish(self):
+    features = tf.constant([.5, 10])
+    result = utils.activation_fn(features, 'mish')
+    self.assertAllClose(result, [0.37524524, 10.0])
 
 
 if __name__ == '__main__':

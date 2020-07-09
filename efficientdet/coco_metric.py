@@ -23,9 +23,9 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-
 import json
 import os
+import zipfile
 from absl import flags
 from absl import logging
 
@@ -120,11 +120,15 @@ class EvaluationMetric(object):
               'score': float(np.around(det[5], decimals=3)),
           })
         json.encoder.FLOAT_REPR = lambda o: format(o, '.3f')
-        output_path = os.path.join(self.testdev_dir,
-                                   'detections_test-dev2017_test_results.json')
+        # Must be in the formst of 'detections_test-dev2017_xxx_results'.
+        fname = 'detections_test-dev2017_test_results'
+        output_path = os.path.join(self.testdev_dir, fname + '.json')
         logging.info('Writing output json file to: %s', output_path)
         with tf.io.gfile.GFile(output_path, 'w') as fid:
           json.dump(box_result_list, fid)
+        zip_path = os.path.join(self.testdev_dir, fname + '.zip')
+        with zipfile.ZipFile(zip_path, 'w') as zf:
+          zf.writestr(fname + '.json', json.dumps(box_result_list))
 
         self._reset()
         return np.array([0.], dtype=np.float32)
@@ -187,12 +191,10 @@ class EvaluationMetric(object):
         for data in groundtruth_data[i, indices]:
           box = data[0:4]
           is_crowd = data[4]
-          area = data[5]
+          area = (box[3] - box[1]) * (box[2] - box[0])
           category_id = data[6]
           if category_id < 0:
             break
-          if area == -1:
-            area = (box[3] - box[1]) * (box[2] - box[0])
           self.dataset['annotations'].append({
               'id': int(self.annotation_id),
               'image_id': int(image_id),
