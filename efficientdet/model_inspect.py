@@ -66,8 +66,9 @@ flags.DEFINE_string('output_video', None,
 
 # For visualization.
 flags.DEFINE_integer('line_thickness', None, 'Line thickness for box.')
-flags.DEFINE_integer('max_boxes_to_draw', None, 'Max number of boxes to draw.')
-flags.DEFINE_float('min_score_thresh', None, 'Score threshold to show box.')
+flags.DEFINE_integer('max_boxes_to_draw', 100, 'Max number of boxes to draw.')
+flags.DEFINE_float('min_score_thresh', 0.4, 'Score threshold to show box.')
+flags.DEFINE_string('nms_method', 'hard', 'nms method, hard or gaussian.')
 
 # For saved model.
 flags.DEFINE_string('saved_model_dir', '/tmp/saved_model',
@@ -90,7 +91,8 @@ class ModelInspector(object):
                saved_model_dir: Text = None,
                tflite_path: Text = None,
                batch_size: int = 1,
-               hparams: Text = ''):
+               hparams: Text = '',
+               **kwargs):
     self.model_name = model_name
     self.logdir = logdir
     self.tensorrt = tensorrt
@@ -108,6 +110,14 @@ class ModelInspector(object):
     # If batch size is 0, then build a graph with dynamic batch size.
     self.batch_size = batch_size or None
     self.labels_shape = [batch_size, model_config.num_classes]
+
+    # A hack to make flag consistent with nms configs.
+    if kwargs.get('score_thresh', None):
+      model_config.nms_configs.score_thresh = kwargs['score_thresh']
+    if kwargs.get('nms_method', None):
+      model_config.nms_configs.method= kwargs['nms_method']
+    if kwargs.get('max_output_size', None):
+      model_config.nms_configs.max_output_size = kwargs['max_output_size']
 
     height, width = model_config.image_size
     if model_config.data_format == 'channels_first':
@@ -468,7 +478,10 @@ def main(_):
       saved_model_dir=FLAGS.saved_model_dir,
       tflite_path=FLAGS.tflite_path,
       batch_size=FLAGS.batch_size,
-      hparams=FLAGS.hparams)
+      hparams=FLAGS.hparams,
+      score_thresh=FLAGS.min_score_thresh,
+      max_output_size=FLAGS.max_boxes_to_draw,
+      nms_method=FLAGS.nms_method)
   inspector.run_model(
       FLAGS.runmode,
       input_image=FLAGS.input_image,
@@ -478,6 +491,7 @@ def main(_):
       line_thickness=FLAGS.line_thickness,
       max_boxes_to_draw=FLAGS.max_boxes_to_draw,
       min_score_thresh=FLAGS.min_score_thresh,
+      nms_method=FLAGS.nms_method,
       bm_runs=FLAGS.bm_runs,
       threads=FLAGS.threads,
       trace_filename=FLAGS.trace_filename)
@@ -485,5 +499,6 @@ def main(_):
 
 if __name__ == '__main__':
   logging.set_verbosity(logging.WARNING)
+  tf.enable_v2_tensorshape()
   tf.disable_eager_execution()
   app.run(main)

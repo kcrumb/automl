@@ -25,6 +25,40 @@ from object_detection import faster_rcnn_box_coder
 from object_detection import region_similarity_calculator
 from object_detection import target_assigner
 
+MAX_DETECTION_POINTS = 5000
+
+
+def decode_box_outputs(pred_boxes, anchor_boxes):
+  """Transforms relative regression coordinates to absolute positions.
+
+  Network predictions are normalized and relative to a given anchor; this
+  reverses the transformation and outputs absolute coordinates for the input
+  image.
+
+  Args:
+    pred_boxes: predicted box regression targets.
+    anchor_boxes: anchors on all feature levels.
+  Returns:
+    outputs: bounding boxes.
+  """
+  anchor_boxes = tf.cast(anchor_boxes, pred_boxes.dtype)
+  ycenter_a = (anchor_boxes[..., 0] + anchor_boxes[..., 2]) / 2
+  xcenter_a = (anchor_boxes[..., 1] + anchor_boxes[..., 3]) / 2
+  ha = anchor_boxes[..., 2] - anchor_boxes[..., 0]
+  wa = anchor_boxes[..., 3] - anchor_boxes[..., 1]
+  ty, tx, th, tw = tf.unstack(pred_boxes, num=4, axis=-1)
+
+  w = tf.math.exp(tw) * wa
+  h = tf.math.exp(th) * ha
+  ycenter = ty * ha + ycenter_a
+  xcenter = tx * wa + xcenter_a
+  ymin = ycenter - h / 2.
+  xmin = xcenter - w / 2.
+  ymax = ycenter + h / 2.
+  xmax = xcenter + w / 2.
+  return tf.stack([ymin, xmin, ymax, xmax], axis=-1)
+
+
 class Anchors():
   """Multi-scale anchors class."""
 
@@ -42,14 +76,18 @@ class Anchors():
         on each level. For instances, aspect_ratios =
         [(1, 1), (1.4, 0.7), (0.7, 1.4)] adds three anchors on each level.
       anchor_scale: float number representing the scale of size of the base
-        anchor to the feature stride 2^level.
+        anchor to the feature stride 2^level. Or a list, one value per layer.
       image_size: integer number or tuple of integer number of input image size.
     """
     self.min_level = min_level
     self.max_level = max_level
     self.num_scales = num_scales
     self.aspect_ratios = aspect_ratios
-    self.anchor_scale = anchor_scale
+    if isinstance(anchor_scale, (list, tuple)):
+      assert len(anchor_scale) == max_level - min_level + 1
+      self.anchor_scales = anchor_scale
+    else:
+      self.anchor_scales = [anchor_scale] * (max_level - min_level + 1)
     self.image_size = utils.parse_image_size(image_size)
     self.feat_sizes = utils.get_feat_sizes(image_size, max_level)
     self.config = self._generate_configs()
@@ -66,7 +104,8 @@ class Anchors():
           anchor_configs[level].append(
               ((feat_sizes[0]['height'] / float(feat_sizes[level]['height']),
                 feat_sizes[0]['width'] / float(feat_sizes[level]['width'])),
-              scale_octave / float(self.num_scales), aspect))
+               scale_octave / float(self.num_scales), aspect,
+               self.anchor_scales[level - self.min_level]))
     return anchor_configs
 
   def _generate_boxes(self):
@@ -75,9 +114,9 @@ class Anchors():
     for _, configs in self.config.items():
       boxes_level = []
       for config in configs:
-        stride, octave_scale, aspect = config
-        base_anchor_size_x = self.anchor_scale * stride[1] * 2**octave_scale
-        base_anchor_size_y = self.anchor_scale * stride[0] * 2**octave_scale
+        stride, octave_scale, aspect, anchor_scale = config
+        base_anchor_size_x = anchor_scale * stride[1] * 2**octave_scale
+        base_anchor_size_y = anchor_scale * stride[0] * 2**octave_scale
         anchor_size_x_2 = base_anchor_size_x * aspect[0] / 2.0
         anchor_size_y_2 = base_anchor_size_y * aspect[1] / 2.0
 
@@ -88,7 +127,7 @@ class Anchors():
         yv = yv.reshape(-1)
 
         boxes = np.vstack((yv - anchor_size_y_2, xv - anchor_size_x_2,
-                          yv + anchor_size_y_2, xv + anchor_size_x_2))
+                           yv + anchor_size_y_2, xv + anchor_size_x_2))
         boxes = np.swapaxes(boxes, 0, 1)
         boxes_level.append(np.expand_dims(boxes, axis=1))
       # concat anchors on the same level to the reshape NxAx4

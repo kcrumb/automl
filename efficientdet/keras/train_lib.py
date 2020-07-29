@@ -14,12 +14,17 @@
 # limitations under the License.
 # ==============================================================================
 """Training related libraries."""
+from concurrent import futures
 import math
 import re
 from absl import logging
+import numpy as np
 import tensorflow as tf
 
+import inference
 import iou_utils
+import utils
+from keras import anchors
 from keras import efficientdet_keras
 
 
@@ -28,7 +33,7 @@ def update_learning_rate_schedule_parameters(params):
   batch_size = params['batch_size'] * params['num_shards']
   # Learning rate is proportional to the batch size
   params['adjusted_learning_rate'] = (params['learning_rate'] * batch_size / 64)
-  steps_per_epoch = params['num_examples_per_epoch'] / batch_size
+  steps_per_epoch = params['steps_per_epoch']
   params['lr_warmup_step'] = int(params['lr_warmup_epoch'] * steps_per_epoch)
   params['first_lr_drop_step'] = int(params['first_lr_drop_epoch'] *
                                      steps_per_epoch)
@@ -93,7 +98,7 @@ class CosineLrSchedule(tf.optimizers.schedules.LearningRateSchedule):
     self.adjusted_lr = adjusted_lr
     self.lr_warmup_init = lr_warmup_init
     self.lr_warmup_step = lr_warmup_step
-    self.total_steps = total_steps
+    self.decay_steps = tf.cast(total_steps - lr_warmup_step, tf.float32)
 
   def __call__(self, step):
 
@@ -102,7 +107,7 @@ class CosineLrSchedule(tf.optimizers.schedules.LearningRateSchedule):
         (tf.cast(step, dtype=tf.float32) / self.lr_warmup_step *
          (self.adjusted_lr - self.lr_warmup_init)))
     cosine_lr = 0.5 * self.adjusted_lr * (
-        1 + tf.cos(math.pi * tf.cast(step, tf.float32) / self.total_steps))
+        1 + tf.cos(math.pi * tf.cast(step, tf.float32) / self.decay_steps))
     return tf.where(step < self.lr_warmup_step, linear_warmup, cosine_lr)
 
 
@@ -175,10 +180,56 @@ def get_optimizer(params):
     optimizer = tf.keras.optimizers.Adam(learning_rate)
   else:
     raise ValueError('optimizers should be adam or sgd')
+
+  moving_average_decay = params['moving_average_decay']
+  if moving_average_decay:
+    # TODO(tanmingxing): potentially add dynamic_decay for new tfa release.
+    import tensorflow_addons as tfa  # pylint: disable=g-import-not-at-top
+    optimizer = tfa.optimizers.MovingAverage(
+        optimizer, average_decay=moving_average_decay)
   if params['mixed_precision']:
     optimizer = tf.keras.mixed_precision.experimental.LossScaleOptimizer(
         optimizer, loss_scale='dynamic')
   return optimizer
+
+
+class DisplayCallback(tf.keras.callbacks.Callback):
+  """Display inference result callback."""
+
+  def __init__(self, sample_image, update_freq=1):
+    super().__init__()
+    self.sample_image = tf.expand_dims(sample_image, axis=0)
+    self.executor = futures.ThreadPoolExecutor(max_workers=1)
+    self.update_freq = update_freq
+
+  def set_model(self, model: tf.keras.Model):
+    self.train_model = model
+    with tf.device('/cpu:0'):
+      self.model = efficientdet_keras.EfficientDetModel(config=model.config)
+    height, width = utils.parse_image_size(model.config.image_size)
+    self.model.build((1, height, width, 3))
+    self.file_writer = tf.summary.create_file_writer(model.config.model_dir)
+
+  def on_epoch_end(self, epoch, logs=None):
+    if epoch % self.update_freq == 0:
+      with self.executor as executor:
+        executor.submit(self.draw_inference, epoch)
+
+  def draw_inference(self, epoch):
+    self.model.set_weights(self.train_model.get_weights())
+    boxes, scores, classes, valid_len = (
+        self.model(self.sample_image, training=False))
+    length = valid_len[0]
+    image = inference.visualize_image(
+        self.sample_image[0],
+        boxes[0].numpy()[:length],
+        classes[0].numpy().astype(np.int)[:length],
+        scores[0].numpy()[:length],
+        min_score_thresh=self.model.config.nms_configs['score_thresh'],
+        max_boxes_to_draw=self.model.config.nms_configs['max_output_size'])
+
+    with self.file_writer.as_default():
+      tf.summary.image('Test image', tf.expand_dims(image, axis=0), step=epoch)
 
 
 def get_callbacks(params, profile=False):
@@ -276,13 +327,22 @@ class BoxLoss(tf.keras.losses.Loss):
 class BoxIouLoss(tf.keras.losses.Loss):
   """Box iou loss."""
 
-  def __init__(self, iou_loss_type, **kwargs):
+  def __init__(self, iou_loss_type, min_level, max_level, num_scales,
+               aspect_ratios, anchor_scale, image_size, **kwargs):
     super().__init__(**kwargs)
     self.iou_loss_type = iou_loss_type
+    self.input_anchors = anchors.Anchors(min_level, max_level, num_scales,
+                                         aspect_ratios, anchor_scale,
+                                         image_size)
 
   @tf.autograph.experimental.do_not_convert
   def call(self, y_true, box_outputs):
+    anchor_boxes = tf.tile(
+        self.input_anchors.boxes,
+        [box_outputs.shape[0] // self.input_anchors.boxes.shape[0], 1])
     num_positives, box_targets = y_true
+    box_outputs = anchors.decode_box_outputs(box_outputs, anchor_boxes)
+    box_targets = anchors.decode_box_outputs(box_targets, anchor_boxes)
     normalizer = num_positives * 4.0
     box_iou_loss = iou_utils.iou_loss(box_outputs, box_targets,
                                       self.iou_loss_type)
@@ -296,29 +356,22 @@ class EfficientDetNetTrain(efficientdet_keras.EfficientDetNet):
   see https://www.tensorflow.org/guide/keras/customizing_what_happens_in_fit
   """
 
-  def __init__(self, *args, **kwargs):
-    super().__init__(*args, **kwargs)
-    self.step = tf.Variable(
-        0,
-        trainable=False,
-        name='global_step',
-        dtype=tf.int64,
-        aggregation=tf.VariableAggregation.ONLY_FIRST_REPLICA,
-        shape=[])
-    if self.config.moving_average_decay:
-      self.ema = tf.train.ExponentialMovingAverage(
-          decay=self.config.moving_average_decay, num_updates=self.step)
-
-  def freeze_vars(self, pattern):
+  def __init__(self, pattern, *args, **kwargs):
     """Freeze variables according to pattern.
 
     Args:
       pattern: a reg experession such as ".*(efficientnet|fpn_cells).*".
     """
-    if pattern:
-      for v in self.trainable_variables:
-        if re.match(pattern, v.name):
-          v.trainable = False
+    super().__init__(*args, **kwargs)
+    self.pattern = pattern
+
+  def _freeze_vars(self):
+    if self.pattern:
+      return [
+          v for v in self.trainable_variables
+          if not re.match(self.pattern, v.name)
+      ]
+    return self.trainable_variables
 
   def _reg_l2_loss(self, weight_decay, regex=r'.*(kernel|weight):0$'):
     """Return regularization l2 loss loss."""
@@ -329,7 +382,7 @@ class EfficientDetNetTrain(efficientdet_keras.EfficientDetNet):
         if var_match.match(v.name)
     ])
 
-  def _detection_loss(self, cls_outputs, box_outputs, labels):
+  def _detection_loss(self, cls_outputs, box_outputs, labels, loss_vals):
     """Computes total detection loss.
 
     Computes total detection loss including box and class loss from all levels.
@@ -359,7 +412,6 @@ class EfficientDetNetTrain(efficientdet_keras.EfficientDetNet):
     levels = range(len(cls_outputs))
     cls_losses = []
     box_losses = []
-    box_iou_losses = []
     for level in levels:
       # Onehot encoding for classification labels.
       cls_targets_at_level = tf.one_hot(labels['cls_targets_%d' % (level + 3)],
@@ -398,17 +450,29 @@ class EfficientDetNetTrain(efficientdet_keras.EfficientDetNet):
             box_loss_layer([num_positives_sum, box_targets_at_level],
                            box_outputs[level]))
 
-      if self.config.iou_loss_type and self.loss.get('box_iou_loss', None):
-        box_iou_loss_layer = self.loss['box_iou_loss']
-        box_iou_losses.append(
-            box_iou_loss_layer([num_positives_sum, box_targets_at_level],
-                               box_outputs[level]))
+    if self.config.iou_loss_type:
+      box_outputs = tf.concat([tf.reshape(v, [-1, 4]) for v in box_outputs],
+                              axis=0)
+      box_targets = tf.concat([
+          tf.reshape(labels['box_targets_%d' % (level + 3)], [-1, 4])
+          for level in levels
+      ],
+                              axis=0)
+      box_iou_loss_layer = self.loss['box_iou_loss']
+      box_iou_loss = box_iou_loss_layer([num_positives_sum, box_targets],
+                                        box_outputs)
+      loss_vals['box_iou_loss'] = box_iou_loss
+    else:
+      box_iou_loss = 0
+
     cls_loss = tf.add_n(cls_losses) if cls_losses else 0
     box_loss = tf.add_n(box_losses) if box_losses else 0
-    box_iou_loss = tf.add_n(box_iou_losses) if box_iou_losses else 0
     total_loss = (
         cls_loss + self.config.box_loss_weight * box_loss +
         self.config.iou_loss_weight * box_iou_loss)
+    loss_vals['det_loss'] = total_loss
+    loss_vals['cls_loss'] = cls_loss
+    loss_vals['box_loss'] = box_loss
     return total_loss, cls_loss, box_loss, box_iou_loss
 
   def train_step(self, data):
@@ -426,16 +490,31 @@ class EfficientDetNetTrain(efficientdet_keras.EfficientDetNet):
     """
     images, labels = data
     with tf.GradientTape() as tape:
-      cls_outputs, box_outputs = self(images, training=True)
-      det_loss, _, _, _ = self._detection_loss(cls_outputs, box_outputs, labels)
+      if len(self.config.heads) == 2:
+        cls_outputs, box_outputs, seg_outputs = self(images, training=True)
+      elif 'object_detection' in self.config.heads:
+        cls_outputs, box_outputs = self(images, training=True)
+      elif 'segmentation' in self.config.heads:
+        seg_outputs = self(images, training=True)
       reg_l2loss = self._reg_l2_loss(self.config.weight_decay)
-      total_loss = det_loss + reg_l2loss
+      total_loss = reg_l2loss
+      loss_vals = {}
+      if 'object_detection' in self.config.heads:
+        det_loss = (
+            self._detection_loss(cls_outputs, box_outputs, labels, loss_vals))
+        total_loss += det_loss
+      if 'segmentation' in self.config.heads:
+        seg_loss_layer = self.loss['seg_loss']
+        seg_loss = seg_loss_layer(seg_outputs, labels['image_masks'])
+        total_loss += seg_loss
+        loss_vals['seg_loss'] = seg_loss
       if isinstance(self.optimizer,
                     tf.keras.mixed_precision.experimental.LossScaleOptimizer):
         scaled_loss = self.optimizer.get_scaled_loss(total_loss)
       else:
         scaled_loss = total_loss
-    trainable_vars = self.trainable_variables
+    loss_vals['loss'] = total_loss
+    trainable_vars = self._freeze_vars()
     scaled_gradients = tape.gradient(scaled_loss, trainable_vars)
     if isinstance(self.optimizer,
                   tf.keras.mixed_precision.experimental.LossScaleOptimizer):
@@ -443,14 +522,11 @@ class EfficientDetNetTrain(efficientdet_keras.EfficientDetNet):
     else:
       gradients = scaled_gradients
     if self.config.clip_gradients_norm > 0:
-      gradients, _ = tf.clip_by_global_norm(gradients,
-                                            self.config.clip_gradients_norm)
-    optimizer_op = self.optimizer.apply_gradients(
-        zip(gradients, trainable_vars))
-    if self.config.moving_average_decay:
-      with tf.control_dependencies([optimizer_op]):
-        self.ema.apply(self.trainable_variables)
-    return {'loss': total_loss}
+      gradients, gnorm = tf.clip_by_global_norm(gradients,
+                                                self.config.clip_gradients_norm)
+      loss_vals['gnorm'] = gnorm
+    self.optimizer.apply_gradients(zip(gradients, trainable_vars))
+    return loss_vals
 
   def test_step(self, data):
     """Test step.
@@ -466,8 +542,22 @@ class EfficientDetNetTrain(efficientdet_keras.EfficientDetNet):
       A dict record loss info.
     """
     images, labels = data
-    cls_outputs, box_outputs = self(images, training=False)
-    det_loss, _, _, _ = self._detection_loss(cls_outputs, box_outputs, labels)
+    if len(self.config.heads) == 2:
+      cls_outputs, box_outputs, seg_outputs = self(images, training=True)
+    elif 'object_detection' in self.config.heads:
+      cls_outputs, box_outputs = self(images, training=True)
+    elif 'segmentation' in self.config.heads:
+      seg_outputs = self(images, training=True)
     reg_l2loss = self._reg_l2_loss(self.config.weight_decay)
-    total_loss = det_loss + reg_l2loss
-    return {'loss': total_loss}
+    total_loss = reg_l2loss
+    loss_vals = {}
+    if 'object_detection' in self.config.heads:
+      det_loss = (
+          self._detection_loss(cls_outputs, box_outputs, labels, loss_vals))
+      total_loss += det_loss
+    if 'segmentation' in self.config.heads:
+      seg_loss_layer = self.loss['seg_loss']
+      seg_loss = seg_loss_layer(seg_outputs, labels['image_masks'])
+      total_loss += seg_loss
+      loss_vals['seg_loss'] = seg_loss
+    return loss_vals

@@ -101,8 +101,7 @@ flags.DEFINE_integer('num_examples_per_epoch', 120000,
 flags.DEFINE_integer('num_epochs', None, 'Number of epochs for training')
 flags.DEFINE_string('mode', 'train',
                     'Mode to run: train or eval (default: train)')
-flags.DEFINE_string('model_name', 'efficientdet-d1',
-                    'Model name: retinanet or efficientdet')
+flags.DEFINE_string('model_name', 'efficientdet-d1', 'Model name.')
 flags.DEFINE_bool('eval_after_training', False, 'Run one eval after the '
                   'training finishes.')
 flags.DEFINE_integer(
@@ -127,6 +126,7 @@ def main(_):
     hvd.init()
     os.environ['CUDA_VISIBLE_DEVICES'] = str(hvd.local_rank())
   import tensorflow.compat.v1 as tf  # pylint: disable=g-import-not-at-top
+  tf.enable_v2_tensorshape()
   tf.disable_eager_execution()
 
   if FLAGS.strategy == 'tpu':
