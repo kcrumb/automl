@@ -13,12 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 r"""Tool to inspect a model."""
-
-from __future__ import absolute_import
-from __future__ import division
-# gtype import
-from __future__ import print_function
-
 import os
 import time
 from typing import Text, Tuple, List
@@ -115,7 +109,7 @@ class ModelInspector(object):
     if kwargs.get('score_thresh', None):
       model_config.nms_configs.score_thresh = kwargs['score_thresh']
     if kwargs.get('nms_method', None):
-      model_config.nms_configs.method= kwargs['nms_method']
+      model_config.nms_configs.method = kwargs['nms_method']
     if kwargs.get('max_output_size', None):
       model_config.nms_configs.max_output_size = kwargs['max_output_size']
 

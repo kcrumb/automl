@@ -1,4 +1,3 @@
-# Lint as: python3
 # Copyright 2020 Google Research. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,8 +21,6 @@ import math
 from typing import Union, Text
 import numpy as np
 import tensorflow as tf
-from tensorflow.python.framework.ops import executing_eagerly_outside_functions # pylint:disable=g-direct-tensorflow-import
-
 FloatType = Union[tf.Tensor, float, np.float32, np.float64]
 
 
@@ -50,7 +47,7 @@ def _get_v(b1_height: FloatType, b1_width: FloatType, b2_height: FloatType,
       gdh = -dv * 8 * arctan * width / (math.pi**2)
       return [gdh, gdw], tf.gradients(v, variables, grad_ys=dv)
 
-    if executing_eagerly_outside_functions():
+    if tf.compat.v1.executing_eagerly_outside_functions():
       return v, _grad_v
     return v, _grad_v_graph
 

@@ -1,4 +1,3 @@
-# Lint as: python3
 # Copyright 2020 Google Research. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,7 +23,6 @@ import tensorflow as tf
 
 import hparams_config
 import inference
-import utils
 from keras import efficientdet_keras
 
 flags.DEFINE_string('image_path', None, 'Location of test image.')
