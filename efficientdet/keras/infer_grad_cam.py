@@ -49,7 +49,8 @@ def main(_):
   config = hparams_config.get_efficientdet_config(FLAGS.model_name)
   config.is_training_bn = False
   # config.image_size = '640x640'
-  config.nms_configs.score_thresh = 0.01
+  # config.nms_configs.score_thresh = 0.01
+  config.nms_configs.score_thresh = 0.4
   config.nms_configs.max_output_size = 100
   config.override(FLAGS.hparams)
 
@@ -79,28 +80,28 @@ def main(_):
                                                               ])
 
   # is only used for pre- and post-processing methods
-  effdet = efficientdet_keras.EfficientDetModel(config=config)
+  effdet_methods = efficientdet_keras.EfficientDetModel(config=config)
 
   # input image preprocessing
-  inputs, scales = effdet._preprocessing(imgs, config.image_size, 'infer')
+  inputs, scales = effdet_methods._preprocessing(imgs, config.image_size, 'infer')
 
   with tf.GradientTape() as tape:
     # Compute activations of the last conv layer and make the tape watch it
-    cls_output, box_output, efficientnet_last_layer = effdet_model(inputs, False)
+    cls_outputs, box_outputs, efficientnet_last_layer = effdet_model(inputs, False)
 
   # save gradients
   grads = None
   if FLAGS.gradient_type == 'cls':
-    grads = tape.gradient(cls_output, efficientnet_last_layer)
+    grads = tape.gradient(cls_outputs, efficientnet_last_layer)
   elif FLAGS.gradient_type == 'box':
-    grads = tape.gradient(box_output, efficientnet_last_layer)
+    grads = tape.gradient(box_outputs, efficientnet_last_layer)
 
   assert grads != None
   grad_cam(grads, efficientnet_last_layer[0], img, imgs[0], FLAGS.gradient_type)
 
 
   ### bounding box visualization ###
-  boxes, scores, classes, valid_len = effdet._postprocess(cls_output, box_output, scales)
+  boxes, scores, classes, valid_len = effdet_methods._postprocess(cls_outputs, box_outputs, scales)
 
   # Visualize results.
   for i, img in enumerate(imgs):
