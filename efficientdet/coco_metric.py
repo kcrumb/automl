@@ -232,7 +232,10 @@ class EvaluationMetric():
         metrics_dict = {}
         for i, name in enumerate(self.metric_names):
           metrics_dict[name] = (metrics[i], update_op)
+        print('metrics_dict', metrics_dict)
         metrics_perclass = metrics[len(self.metric_names):]
+        print('metrics_perclass', metrics_perclass)
+        print('num_classes', num_classes)
         if num_classes:
           for i in range(num_classes):
             metrics_dict['AP_/class%d' % i] = (metrics_perclass[i], update_op)
