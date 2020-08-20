@@ -74,7 +74,7 @@ def main(_):
   model.load_weights(tf.train.latest_checkpoint(FLAGS.model_dir))
 
   # create new model to access intermediate layers
-  effdet_model = tf.keras.Model(inputs=model.inputs, outputs=[model.get_layer(name='class_net').output,
+  effdet_model = tf.keras.Model(inputs=model.input, outputs=[model.get_layer(name='class_net').output,
                                                               model.get_layer(name='box_net').output,
                                                               model.backbone.layers[-3].output  # last layer
                                                               ])
@@ -83,6 +83,7 @@ def main(_):
   effdet_methods = efficientdet_keras.EfficientDetModel(config=config)
 
   # input image preprocessing
+  imgs = tf.convert_to_tensor(imgs)
   inputs, scales = effdet_methods._preprocessing(imgs, config.image_size, 'infer')
 
   with tf.GradientTape() as tape:
