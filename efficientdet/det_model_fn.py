@@ -18,7 +18,6 @@ import re
 from absl import logging
 import numpy as np
 import tensorflow.compat.v1 as tf
-
 import coco_metric
 import efficientdet_arch
 import hparams_config
@@ -37,7 +36,7 @@ def update_learning_rate_schedule_parameters(params):
   # params['batch_size'] is per-shard within model_fn if strategy=tpu.
   batch_size = (
       params['batch_size'] * params['num_shards']
-      if params['strategy'] == 'tpu' else params['batch_size'])
+      if params['strategy'] in ['tpu', 'gpus'] else params['batch_size'])
   # Learning rate is proportional to the batch size
   params['adjusted_learning_rate'] = (
       params['learning_rate'] * batch_size / _DEFAULT_BATCH_SIZE)
@@ -153,7 +152,7 @@ def focal_loss(y_pred, y_true, alpha, gamma, normalizer, label_smoothing=0.0):
     pred_prob = tf.sigmoid(y_pred)
     p_t = (y_true * pred_prob) + ((1 - y_true) * (1 - pred_prob))
     alpha_factor = y_true * alpha + (1 - y_true) * (1 - alpha)
-    modulating_factor = (1.0 - p_t) ** gamma
+    modulating_factor = (1.0 - p_t)**gamma
 
     # apply label smoothing for cross_entropy for each entry.
     y_true = y_true * (1.0 - label_smoothing) + 0.5 * label_smoothing
@@ -213,7 +212,8 @@ def detection_loss(cls_outputs, box_outputs, labels, params):
   # Sum all positives in a batch for normalization and avoid zero
   # num_positives_sum, which would lead to inf loss during training
   num_positives_sum = tf.reduce_sum(labels['mean_num_positives']) + 1.0
-  if params.get('positives_momentum', 0) > 0:
+  positives_momentum = params.get('positives_momentum', None) or 0
+  if positives_momentum > 0:
     # normalize the num_positive_examples for training stability.
     moving_normalizer_var = tf.Variable(
         0.0,
@@ -226,7 +226,7 @@ def detection_loss(cls_outputs, box_outputs, labels, params):
         moving_normalizer_var,
         num_positives_sum,
         momentum=params['positives_momentum'])
-  elif params['positives_momentum'] < 0:
+  elif positives_momentum < 0:
     num_positives_sum = utils.cross_replica_mean(num_positives_sum)
 
   levels = cls_outputs.keys()
@@ -301,8 +301,7 @@ def detection_loss(cls_outputs, box_outputs, labels, params):
   box_loss = tf.add_n(box_losses) if box_losses else 0
 
   total_loss = (
-      cls_loss +
-      params['box_loss_weight'] * box_loss +
+      cls_loss + params['box_loss_weight'] * box_loss +
       params['iou_loss_weight'] * box_iou_loss)
 
   return total_loss, cls_loss, box_loss, box_iou_loss
@@ -318,6 +317,7 @@ def reg_l2_loss(weight_decay, regex=r'.*(kernel|weight):0$'):
   ])
 
 
+@tf.autograph.experimental.do_not_convert
 def _model_fn(features, labels, mode, params, model, variable_filter_fn=None):
   """Model definition entry.
 
@@ -342,8 +342,10 @@ def _model_fn(features, labels, mode, params, model, variable_filter_fn=None):
   """
   utils.image('input_image', features)
   training_hooks = []
+  params['is_training_bn'] = (mode == tf.estimator.ModeKeys.TRAIN)
 
   if params['use_keras_model']:
+
     def model_fn(inputs):
       model = efficientdet_keras.EfficientDetNet(
           config=hparams_config.Config(params))
@@ -403,9 +405,7 @@ def _model_fn(features, labels, mode, params, model, variable_filter_fn=None):
     ema = tf.train.ExponentialMovingAverage(
         decay=moving_average_decay, num_updates=global_step)
     ema_vars = utils.get_ema_vars()
-  if params['strategy'] == 'horovod':
-    import horovod.tensorflow as hvd  # pylint: disable=g-import-not-at-top
-    learning_rate = learning_rate * hvd.size()
+
   if mode == tf.estimator.ModeKeys.TRAIN:
     if params['optimizer'].lower() == 'sgd':
       optimizer = tf.train.MomentumOptimizer(
@@ -417,9 +417,21 @@ def _model_fn(features, labels, mode, params, model, variable_filter_fn=None):
 
     if params['strategy'] == 'tpu':
       optimizer = tf.tpu.CrossShardOptimizer(optimizer)
-    elif params['strategy'] == 'horovod':
-      optimizer = hvd.DistributedOptimizer(optimizer)
-      training_hooks = [hvd.BroadcastGlobalVariablesHook(0)]
+    if params['gradient_checkpointing']:
+      from third_party.grad_checkpoint import memory_saving_gradients  # pylint: disable=import-outside-toplevel
+      from tensorflow.python.ops import gradients  # pylint: disable=import-outside-toplevel
+
+      # monkey patch tf.gradients to point to our custom version,
+      # with automatic checkpoint selection
+      def gradients_(ys, xs, grad_ys=None, **kwargs):
+        return memory_saving_gradients.gradients(
+            ys,
+            xs,
+            grad_ys,
+            checkpoints=params['gradient_checkpointing_list'],
+            **kwargs)
+
+      gradients.__dict__["gradients"] = gradients_
 
     # Batch norm requires update_ops to be added as a train_op dependency.
     update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
@@ -435,7 +447,10 @@ def _model_fn(features, labels, mode, params, model, variable_filter_fn=None):
         tvars = [gv[1] for gv in grads_and_vars]
         # First clip each variable's norm, then clip global norm.
         clip_norm = abs(params['clip_gradients_norm'])
-        clipped_grads = [tf.clip_by_norm(g, clip_norm) for g in grads]
+        clipped_grads = [
+            tf.clip_by_norm(g, clip_norm) if g is not None else None
+            for g in grads
+        ]
         clipped_grads, _ = tf.clip_by_global_norm(clipped_grads, clip_norm)
         utils.scalar('gradient_norm', tf.linalg.global_norm(clipped_grads))
         grads_and_vars = list(zip(clipped_grads, tvars))
@@ -505,9 +520,9 @@ def _model_fn(features, labels, mode, params, model, variable_filter_fn=None):
       else:
         logging.info('Eval val with groudtruths %s.', params['val_json_file'])
         eval_metric = coco_metric.EvaluationMetric(
-            filename=params['val_json_file'])
+            filename=params['val_json_file'], label_map=params['label_map'])
         coco_metrics = eval_metric.estimator_metric_fn(
-            detections_bs, kwargs['groundtruth_data'], params['label_map'])
+            detections_bs, kwargs['groundtruth_data'])
 
       # Add metrics to output.
       cls_loss = tf.metrics.mean(kwargs['cls_loss_repeat'])
@@ -575,7 +590,6 @@ def _model_fn(features, labels, mode, params, model, variable_filter_fn=None):
           skip_mismatch=params['skip_mismatch'])
 
       tf.train.init_from_checkpoint(checkpoint, var_map)
-
       return tf.train.Scaffold()
   elif mode == tf.estimator.ModeKeys.EVAL and moving_average_decay:
 
@@ -590,21 +604,22 @@ def _model_fn(features, labels, mode, params, model, variable_filter_fn=None):
 
   if params['strategy'] != 'tpu':
     # Profile every 1K steps.
-    profile_hook = tf.train.ProfilerHook(
-        save_steps=1000, output_dir=params['model_dir'])
-    training_hooks.append(profile_hook)
+    if params.get('profile', False):
+      profile_hook = tf.estimator.ProfilerHook(
+          save_steps=1000, output_dir=params['model_dir'], show_memory=True)
+      training_hooks.append(profile_hook)
 
-    # Report memory allocation if OOM
-    class OomReportingHook(tf.estimator.SessionRunHook):
+      # Report memory allocation if OOM
+      class OomReportingHook(tf.estimator.SessionRunHook):
 
-      def before_run(self, run_context):
-        return tf.estimator.SessionRunArgs(
-            fetches=[],
-            options=tf.RunOptions(report_tensor_allocations_upon_oom=True))
+        def before_run(self, run_context):
+          return tf.estimator.SessionRunArgs(
+              fetches=[],
+              options=tf.RunOptions(report_tensor_allocations_upon_oom=True))
 
-    training_hooks.append(OomReportingHook())
+      training_hooks.append(OomReportingHook())
 
-    logging_hook = tf.train.LoggingTensorHook(
+    logging_hook = tf.estimator.LoggingTensorHook(
         {
             'step': global_step,
             'det_loss': det_loss,
@@ -615,14 +630,43 @@ def _model_fn(features, labels, mode, params, model, variable_filter_fn=None):
     )
     training_hooks.append(logging_hook)
 
-  return tf.estimator.tpu.TPUEstimatorSpec(
-      mode=mode,
-      loss=total_loss,
-      train_op=train_op,
-      eval_metrics=eval_metrics,
-      host_call=utils.get_tpu_host_call(global_step, params),
-      scaffold_fn=scaffold_fn,
-      training_hooks=training_hooks)
+    if params["nvgpu_logging"]:
+      try:
+        from third_party.tools.nvgpu import gpu_memory_util_message  # pylint: disable=import-outside-toplevel
+
+        mem_message = tf.py_func(gpu_memory_util_message, [], [tf.string])[0]
+
+        logging_hook_nvgpu = tf.estimator.LoggingTensorHook(
+            tensors={
+                "mem_message": mem_message,
+            },
+            every_n_iter=params.get('iterations_per_loop', 100),
+            formatter=lambda x: x["mem_message"].decode("utf-8"),
+        )
+        training_hooks.append(logging_hook_nvgpu)
+      except:
+        logging.error("nvgpu error: nvidia-smi format not recognized")
+
+  if params['strategy'] == 'tpu':
+    return tf.estimator.tpu.TPUEstimatorSpec(
+        mode=mode,
+        loss=total_loss,
+        train_op=train_op,
+        eval_metrics=eval_metrics,
+        host_call=utils.get_tpu_host_call(global_step, params),
+        scaffold_fn=scaffold_fn,
+        training_hooks=training_hooks)
+  else:
+    eval_metric_ops = (
+        eval_metrics[0](**eval_metrics[1]) if eval_metrics else None)
+    utils.get_tpu_host_call(global_step, params)
+    return tf.estimator.EstimatorSpec(
+        mode=mode,
+        loss=total_loss,
+        train_op=train_op,
+        eval_metric_ops=eval_metric_ops,
+        scaffold=scaffold_fn() if scaffold_fn else None,
+        training_hooks=training_hooks)
 
 
 def efficientdet_model_fn(features, labels, mode, params):

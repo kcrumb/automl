@@ -186,7 +186,7 @@ def get_optimizer(params):
     # TODO(tanmingxing): potentially add dynamic_decay for new tfa release.
     import tensorflow_addons as tfa  # pylint: disable=g-import-not-at-top
     optimizer = tfa.optimizers.MovingAverage(
-        optimizer, average_decay=moving_average_decay)
+        optimizer, average_decay=moving_average_decay, dynamic_decay=True)
   if params['mixed_precision']:
     optimizer = tf.keras.mixed_precision.experimental.LossScaleOptimizer(
         optimizer, loss_scale='dynamic')
@@ -428,11 +428,17 @@ class EfficientDetNetTrain(efficientdet_keras.EfficientDetNet):
                                         self.config.num_classes)
 
       if self.config.data_format == 'channels_first':
-        bs, _, width, height, _ = cls_targets_at_level.get_shape().as_list()
+        targets_shape = tf.shape(cls_targets_at_level)
+        bs = targets_shape[0]
+        width = targets_shape[2]
+        height = targets_shape[3]
         cls_targets_at_level = tf.reshape(cls_targets_at_level,
                                           [bs, -1, width, height])
       else:
-        bs, width, height, _, _ = cls_targets_at_level.get_shape().as_list()
+        targets_shape = tf.shape(cls_targets_at_level)
+        bs = targets_shape[0]
+        width = targets_shape[1]
+        height = targets_shape[2]
         cls_targets_at_level = tf.reshape(cls_targets_at_level,
                                           [bs, width, height, -1])
       box_targets_at_level = labels['box_targets_%d' % (level + 3)]

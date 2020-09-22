@@ -236,7 +236,8 @@ def det_post_process(params: Dict[Any, Any], cls_outputs: Dict[int, tf.Tensor],
         params, cls_outputs, box_outputs, scales)
 
   batch_size = tf.shape(cls_outputs[params['min_level']])[0]
-  img_ids = tf.expand_dims(tf.cast(tf.range(0, batch_size), nms_scores.dtype), -1)
+  img_ids = tf.expand_dims(
+      tf.cast(tf.range(0, batch_size), nms_scores.dtype), -1)
   detections = [
       img_ids * tf.ones_like(nms_scores),
       nms_boxes[:, :, 0],
@@ -275,7 +276,7 @@ def visualize_image(image,
   Returns:
     output_image: an output image with annotated boxes and classes.
   """
-  label_map = label_util.get_label_map(label_map)
+  label_map = label_util.get_label_map(label_map or 'coco')
   category_index = {k: {'id': k, 'name': label_map[k]} for k in label_map}
   img = np.array(image)
   vis_utils.visualize_boxes_and_labels_on_image_array(
@@ -690,6 +691,6 @@ class InferenceDriver(object):
             **kwargs)
         output_image_path = os.path.join(output_dir, str(i) + '.jpg')
         Image.fromarray(img).save(output_image_path)
-        logging.info('writing file to %s', output_image_path)
+        print('writing file to %s' % output_image_path)
 
       return predictions

@@ -44,9 +44,10 @@ class EfficientDetKerasTest(tf.test.TestCase):
       model = efficientdet_keras.EfficientDetNet(config=config)
       outputs = model(feats, True)
       sess.run(tf.global_variables_initializer())
-      keras_class_out, keras_box_out, keras_seg_out = sess.run(outputs)
-      grads = tf.nest.map_structure(lambda output: tf.gradients(output, feats), outputs)
-      keras_class_grads, keras_box_grads, keras_seg_grads = sess.run(grads)
+      keras_class_out, keras_box_out, _ = sess.run(outputs)
+      grads = tf.nest.map_structure(lambda output: tf.gradients(output, feats),
+                                    outputs)
+      keras_class_grads, keras_box_grads, _ = sess.run(grads)
       model.save_weights(tmp_ckpt)
     with tf.Session(graph=tf.Graph()) as sess:
       feats = tf.ones(inputs_shape)
@@ -54,7 +55,8 @@ class EfficientDetKerasTest(tf.test.TestCase):
       outputs = legacy_arch.efficientdet(feats, config=config)
       sess.run(tf.global_variables_initializer())
       legacy_class_out, legacy_box_out = sess.run(outputs)
-      grads = tf.nest.map_structure(lambda output: tf.gradients(output, feats), outputs)
+      grads = tf.nest.map_structure(lambda output: tf.gradients(output, feats),
+                                    outputs)
       legacy_class_grads, legacy_box_grads = sess.run(grads)
 
     for i in range(3, 8):
@@ -67,15 +69,30 @@ class EfficientDetKerasTest(tf.test.TestCase):
       self.assertAllClose(
           keras_box_grads[i - 3], legacy_box_grads[i], rtol=1e-4, atol=1e-4)
 
+  def test_eager_output(self):
+    inputs_shape = [1, 512, 512, 3]
+    config = hparams_config.get_efficientdet_config('efficientdet-d0')
+    config.heads = ['object_detection', 'segmentation']
+    tmp_ckpt = os.path.join(tempfile.mkdtemp(), 'ckpt2')
+
+    with tf.Session(graph=tf.Graph()) as sess:
+      feats = tf.ones(inputs_shape)
+      tf.random.set_random_seed(SEED)
+      model = efficientdet_keras.EfficientDetNet(config=config)
+      outputs = model(feats, True)
+      sess.run(tf.global_variables_initializer())
+      keras_class_out, keras_box_out, keras_seg_out = sess.run(outputs)
+      model.save_weights(tmp_ckpt)
+
     feats = tf.ones(inputs_shape)
     model = efficientdet_keras.EfficientDetNet(config=config)
     model.load_weights(tmp_ckpt)
     eager_class_out, eager_box_out, eager_seg_out = model(feats, True)
-    for i in range(3, 8):
+    for i in range(5):
       self.assertAllClose(
-          eager_class_out[i - 3], legacy_class_out[i], rtol=1e-4, atol=1e-4)
+          eager_class_out[i], keras_class_out[i], rtol=1e-4, atol=1e-4)
       self.assertAllClose(
-          eager_box_out[i - 3], legacy_box_out[i], rtol=1e-4, atol=1e-4)
+          eager_box_out[i], keras_box_out[i], rtol=1e-4, atol=1e-4)
     self.assertAllClose(
         eager_seg_out, keras_seg_out, rtol=1e-4, atol=1e-4)
 
@@ -129,13 +146,17 @@ class EfficientDetKerasTest(tf.test.TestCase):
       model(feats, True)
       keras_train_vars = sorted([var.name for var in tf.trainable_variables()])
       keras_model_vars = sorted([var.name for var in tf.global_variables()])
-      keras_update_ops = [op.name for op in tf.get_collection(tf.GraphKeys.UPDATE_OPS)]
+      keras_update_ops = [
+          op.name for op in tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+      ]
     with tf.Graph().as_default():
       feats = tf.ones([1, 512, 512, 3])
       legacy_arch.efficientdet(feats, 'efficientdet-d0')
       legacy_train_vars = sorted([var.name for var in tf.trainable_variables()])
       legacy_model_vars = sorted([var.name for var in tf.global_variables()])
-      legacy_update_ops = [op.name for op in tf.get_collection(tf.GraphKeys.UPDATE_OPS)]
+      legacy_update_ops = [
+          op.name for op in tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+      ]
     self.assertEqual(keras_train_vars, legacy_train_vars)
     self.assertEqual(keras_model_vars, legacy_model_vars)
     self.assertEqual(eager_train_vars, legacy_train_vars)

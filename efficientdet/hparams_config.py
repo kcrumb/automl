@@ -131,9 +131,12 @@ class Config(object):
         def add_kv_recursive(k, v):
           """Recursively parse x.y.z=tt to {x: {y: {z: tt}}}."""
           if '.' not in k:
+            if '*' in v:
+              # we reserve * to split arrays.
+              return {k: [eval_str_fn(vv) for vv in v.split('*')]}
             return {k: eval_str_fn(v)}
           pos = k.index('.')
-          return {k[:pos]: add_kv_recursive(k[pos+1:], v)}
+          return {k[:pos]: add_kv_recursive(k[pos + 1:], v)}
 
         def merge_dict_recursive(target, src):
           """Recursively merge two nested dictionary."""
@@ -158,7 +161,7 @@ class Config(object):
       else:
         config_dict[k] = copy.deepcopy(v)
     return config_dict
-# pylint: enable=protected-access
+    # pylint: enable=protected-access
 
 
 def default_detection_configs():
@@ -180,7 +183,7 @@ def default_detection_configs():
   h.autoaugment_policy = None
   h.use_augmix = False
   # mixture_width, mixture_depth, alpha
-  h.augmix_params = (3, -1, 1)
+  h.augmix_params = [3, -1, 1]
   h.sample_image = None
 
   # dataset specific parameters
@@ -190,7 +193,7 @@ def default_detection_configs():
   h.heads = ['object_detection']  # 'object_detection', 'segmentation'
 
   h.skip_crowd_during_training = True
-  h.label_map = 'coco'  # a dict or a string of 'coco'/'voc'.
+  h.label_map = None  # a dict or a string of 'coco', 'voc', 'waymo'.
   h.max_instances_per_image = 100  # Default to 100 for COCO.
   h.regenerate_source_id = False
 
@@ -198,8 +201,8 @@ def default_detection_configs():
   h.min_level = 3
   h.max_level = 7
   h.num_scales = 3
-  # aspect ratio with format (w, h). Can be computed with k-mean per dataset.
-  h.aspect_ratios = [(1.0, 1.0), (1.4, 0.7), (0.7, 1.4)]
+  # ratio w/h: 2.0 means w=1.4, h=0.7. Can be computed with k-mean per dataset.
+  h.aspect_ratios = [1.0, 2.0, 0.5]
   h.anchor_scale = 4.0
   # is batchnorm training mode
   h.is_training_bn = True
@@ -231,8 +234,7 @@ def default_detection_configs():
 
   # regularization l2 loss.
   h.weight_decay = 4e-5
-  # use horovod for multi-gpu training. If None, use TF default.
-  h.strategy = None  # 'tpu', 'horovod', None
+  h.strategy = None  # 'tpu', 'gpus', None
   h.mixed_precision = False  # If False, use float32.
 
   # For detection.
@@ -243,6 +245,7 @@ def default_detection_configs():
   h.apply_bn_for_resampling = True
   h.conv_after_downsample = False
   h.conv_bn_act_pattern = False
+  h.drop_remainder = True  # drop remainder for the final batch eval.
 
   # For post-processing nms, must be a dict.
   h.nms_configs = {
@@ -276,10 +279,32 @@ def default_detection_configs():
   # A temporary flag to switch between legacy and keras models.
   h.use_keras_model = True
   h.dataset_type = None
-  h.positives_momentum = 0
+  h.positives_momentum = None
 
-  # unused.
-  h.resnet_depth = 50
+  # Reduces memory during training
+  h.gradient_checkpointing = False
+
+  # Values that could be used are "Add", "Mul", "Conv2d", "Floor", "Sigmoid",
+  # and other ops names
+  # or more specific, e.g. "blocks_10/se/conv2d_1"
+  # E.g. if you use ["Add", "Sigmoid"] it would automatically checkpoint
+  # all "Add" and "Sigmoid" ops
+  # The advantage of adding more ops is that the GPU does not need to recompute
+  # them during the backward pass and can use them as a base to recompute
+  # other nodes, so it improves the speed
+  # The disadvantage of adding more ops is it requires more GPU memory to cache
+  # the computation
+  # The default is ["Add"] as it is a "bottleneck" node in the backbone network
+  # EfficientNet. It has been tested and works reasonably well:
+  # 1) For d4 network with batch-size of 1 (mixed precision enabled) it takes
+  # only 1/3.2 of memory with roughly 32% slower computation.
+  # 2) It allows to train a d6 network with batch size of 2 and mixed precision
+  # on a 11Gb (2080ti) GPU, without this option there is an OOM error
+  h.gradient_checkpointing_list = ["Add"]
+
+  # enable memory logging for NVIDIA cards
+  h.nvgpu_logging = False
+
   return h
 
 
