@@ -164,7 +164,8 @@ def read_file_csv(file: str) -> dict:
     with open(file, mode='r') as f:
         lines = f.read().split('\n')
     line_split = [l.split(',', maxsplit=1) for l in lines if l]
-    for line in line_split:
+    line_split_sorted = sorted(line_split, key=lambda x: int(x[0][x[0].rindex('/')+1 : x[0].rindex('.')]))
+    for line in line_split_sorted:
         key_img = line[0]
 
         if key_img in img_anno:
