@@ -28,6 +28,54 @@ import tensorflow as tf
 from keras import label_util
 
 
+def extended_summarize(eval_coco):
+  '''
+  Compute and display summary metrics for evaluation results.
+  Note this functin can *only* be applied on the default parameter setting
+  '''
+
+  def _summarize(ap=1, iouThr=None, areaRng='all', maxDets=100):
+    p = eval_coco.params
+    iStr = ' {:<18} {} @[ IoU={:<9} | area={:>6s} | maxDets={:>3d} ] = {:0.3f}'
+    titleStr = 'Average Precision' if ap == 1 else 'Average Recall'
+    typeStr = '(AP)' if ap == 1 else '(AR)'
+    iouStr = '{:0.2f}:{:0.2f}'.format(p.iouThrs[0], p.iouThrs[-1]) \
+      if iouThr is None else '{:0.2f}'.format(iouThr)
+
+    aind = [i for i, aRng in enumerate(p.areaRngLbl) if aRng == areaRng]
+    mind = [i for i, mDet in enumerate(p.maxDets) if mDet == maxDets]
+    if ap == 1:
+      # dimension of precision: [TxRxKxAxM]
+      s = eval_coco.eval['precision']
+      # IoU
+      if iouThr is not None:
+        t = np.where(iouThr == p.iouThrs)[0]
+        s = s[t]
+      s = s[:, :, :, aind, mind]
+    else:
+      # dimension of recall: [TxKxAxM]
+      s = eval_coco.eval['recall']
+      if iouThr is not None:
+        t = np.where(iouThr == p.iouThrs)[0]
+        s = s[t]
+      s = s[:, :, aind, mind]
+    if len(s[s > -1]) == 0:
+      mean_s = -1
+    else:
+      mean_s = np.mean(s[s > -1])
+    print(iStr.format(titleStr, typeStr, iouStr, areaRng, maxDets, mean_s))
+    return mean_s
+
+  def _summarizeDets():
+    _summarize(1, iouThr=.5, maxDets=eval_coco.params.maxDets[2])
+    _summarize(1, iouThr=.75, maxDets=eval_coco.params.maxDets[2])
+    _summarize(0, iouThr=.5, maxDets=eval_coco.params.maxDets[2])
+    _summarize(0, iouThr=.75, maxDets=eval_coco.params.maxDets[2])
+
+  if not eval_coco.eval:
+    raise Exception('Please run accumulate() first')
+  _summarizeDets()
+
 class EvaluationMetric():
   """COCO evaluation metric class.
 
@@ -113,6 +161,10 @@ class EvaluationMetric():
       coco_eval.evaluate()
       coco_eval.accumulate()
       coco_eval.summarize()
+
+      print()
+      extended_summarize(coco_eval)
+
       coco_metrics = coco_eval.stats
 
       if self.label_map:
